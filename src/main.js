@@ -357,13 +357,25 @@ function isIOSLikeSafari() {
   return iOSDevice && /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS/.test(ua);
 }
 
+const _isSafari = (() => {
+  const ua = navigator.userAgent || '';
+  return /Safari/.test(ua) && !/Chrome|CriOS|FxiOS|EdgiOS/.test(ua);
+})();
+
 function getPiperCpuInstances() {
+  // iOS devices: 1 worker to avoid OOM
   if (isIOSLikeSafari()) return 1;
+  // Desktop Safari: 2 workers — Safari's SW interception and WASM
+  // threading are less robust than Chrome, and 4 concurrent workers
+  // can race on the HuggingFace model download, causing some workers
+  // to get a partial/corrupt response ("protobuf parsing failed").
+  if (_isSafari) return 2;
   return Math.max(1, Math.min(4, navigator.hardwareConcurrency || 2));
 }
 
 function getSynthesisConcurrency() {
   if (isIOSLikeSafari()) return 1;
+  if (_isSafari) return 2;
   return getPiperCpuInstances();
 }
 
