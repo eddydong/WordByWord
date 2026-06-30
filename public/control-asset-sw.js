@@ -877,7 +877,7 @@ async function ye(e) {
 function $(e, t = {}) {
 	let { filename: n, status: r = 200, extraHeaders: i = {} } = t, a = {
 		"x-piper-sw": "verified",
-		"Cross-Origin-Resource-Policy": "same-origin",
+		"Cross-Origin-Resource-Policy": "cross-origin",
 		...i
 	};
 	return n && (a["Content-Type"] = pe[n.substring(n.lastIndexOf("."))] ?? "application/octet-stream"), new Response(e, {
