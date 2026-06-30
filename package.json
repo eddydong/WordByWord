@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node scripts/download-voice-models.js",
     "build": "vite build",
     "preview": "vite preview"
   },

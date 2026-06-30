@@ -10,3 +10,12 @@
 
 /piper-gate/infra/*.data
   Content-Type: application/octet-stream
+
+/piper-gate/voices/*.onnx
+  Content-Type: application/octet-stream
+  Accept-Ranges: bytes
+  Cross-Origin-Resource-Policy: cross-origin
+
+/piper-gate/voices/*.json
+  Content-Type: application/json
+  Cross-Origin-Resource-Policy: cross-origin

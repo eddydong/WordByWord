@@ -350,6 +350,40 @@ function estimateDuration(sentence) {
   return (words / 2.5) * 1000; // ms at 1x speed (~150 wpm)
 }
 
+function isIOSLikeSafari() {
+  const ua = navigator.userAgent || '';
+  const iOSDevice = /iPad|iPhone|iPod/.test(ua) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  return iOSDevice && /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS/.test(ua);
+}
+
+function getPiperCpuInstances() {
+  if (isIOSLikeSafari()) return 1;
+  return Math.max(1, Math.min(4, navigator.hardwareConcurrency || 2));
+}
+
+function getSynthesisConcurrency() {
+  if (isIOSLikeSafari()) return 1;
+  return getPiperCpuInstances();
+}
+
+function isCorruptModelError(err) {
+  const message = String(err?.message || err || '');
+  return /protobuf parsing failed|failed to load model|can't create a session/i.test(message);
+}
+
+async function purgeVoiceAssetCache(modelId) {
+  if (!modelId || !navigator.serviceWorker?.controller) return false;
+  try {
+    const res = await fetch(`/piper-gate/voices/${modelId}`, { method: 'DELETE' });
+    console.log('[piper-cache] Purged voice asset cache:', modelId, res.status);
+    return res.ok;
+  } catch (err) {
+    console.warn('[piper-cache] Voice asset purge failed:', err);
+    return false;
+  }
+}
+
 // ─── UI Rendering ────────────────────────────────────────────────
 
 function renderSelectors() {
@@ -409,6 +443,7 @@ async function loadExercise(index) {
   state.ttsMeta = null;
   state.audioBuffers = {};
   state.ttsMetaBySpeed = {};
+  state._initError = null;
 
   $('#exerciseBadge').textContent = `Part ${ex.part} · Exercise ${index + 1}`;
   $('#exerciseTitle').textContent = ex.title;
@@ -658,10 +693,11 @@ async function initProvider() {
       document.querySelector('.loading-bar-fill')?.classList.add('indeterminate');
 
       const t0 = Date.now();
+      const cpuInstances = getPiperCpuInstances();
 
       const initPromise = state.provider.init({
         modelId,
-        cpuInstances: 4,
+        cpuInstances,
         onProgress: (s) => {
           document.querySelector('.loading-bar-fill')?.classList.remove('indeterminate');
           state.loadingProgress = s.progress;
@@ -681,7 +717,7 @@ async function initProvider() {
       if (!state.audioCtx) {
         state.audioCtx = new AudioContext();
       }
-      console.log(`[initProvider] ready in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+      console.log(`[initProvider] ready in ${((Date.now() - t0) / 1000).toFixed(1)}s with cpuInstances=${cpuInstances}`);
     } catch (err) {
       document.querySelector('.loading-bar-fill')?.classList.remove('indeterminate');
       console.error('[initProvider] FAILED:', err.message, '| stack:', err.stack);
@@ -695,6 +731,20 @@ async function initProvider() {
   })();
 
   await _initPromise;
+}
+
+async function initProviderWithCorruptModelRetry() {
+  const modelId = VOICE_MODELS[state.voiceType];
+  try {
+    await initProvider();
+  } catch (err) {
+    if (!isCorruptModelError(err)) throw err;
+    console.warn('[initProvider] Model parse failed; purging cached voice assets and retrying once.');
+    state.provider = null;
+    state.providerReady = false;
+    await purgeVoiceAssetCache(modelId);
+    await initProvider();
+  }
 }
 
 async function switchVoice(voiceType) {
@@ -721,15 +771,25 @@ async function switchVoice(voiceType) {
   }
 
   if (!state.provider || !state.providerReady) {
-    await initProvider();
+    await initProviderWithCorruptModelRetry();
   }
 
   const modelId = VOICE_MODELS[voiceType];
   try {
-    await state.provider.init({ modelId, cpuInstances: 4 });
+    await state.provider.init({ modelId, cpuInstances: getPiperCpuInstances() });
   } catch (err) {
-    console.error('Voice switch failed:', err);
-    return;
+    if (!isCorruptModelError(err)) {
+      console.error('Voice switch failed:', err);
+      return;
+    }
+    console.warn('[switchVoice] Model parse failed; purging cached voice assets and retrying once.');
+    await purgeVoiceAssetCache(modelId);
+    try {
+      await state.provider.init({ modelId, cpuInstances: getPiperCpuInstances() });
+    } catch (retryErr) {
+      console.error('Voice switch failed after retry:', retryErr);
+      return;
+    }
   }
   // Re-synthesize with new voice
   if (state.sentences.length > 0) {
@@ -887,33 +947,47 @@ async function synthesizeAtSpeed(preset, onProgress) {
   const sentences = state.sentences;
   const SYNTH_TIMEOUT_MS = 45_000; // 45s per sentence should be plenty
 
-  // Dispatch all sentences in parallel — the worker pool queues and processes them
+  // Dispatch through a bounded queue. iPad Safari is much more reliable when
+  // it does not have several large worker/model jobs active at once.
   let completed = 0;
   const total = sentences.length;
-  console.log(`[synthesize] ${preset}: dispatching all ${total} sentences in parallel`);
+  const concurrency = Math.min(total || 1, getSynthesisConcurrency());
+  console.log(`[synthesize] ${preset}: synthesizing ${total} sentences with concurrency=${concurrency}`);
 
-  const results = await Promise.all(
-    sentences.map((text, i) => {
-      const startTime = performance.now();
-      const synthPromise = state.provider.synthesize(text, { speed: spd.speed });
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(`Synthesis timed out after ${SYNTH_TIMEOUT_MS / 1000}s`)), SYNTH_TIMEOUT_MS)
-      );
-      return Promise.race([synthPromise, timeoutPromise])
-        .then(res => {
-          completed++;
-          console.log(`[synthesize] ${preset} sentence ${i + 1}/${total} OK in ${((performance.now() - startTime) / 1000).toFixed(1)}s (${completed}/${total} done)`);
-          if (onProgress) onProgress(completed / total);
-          return res;
-        })
-        .catch(err => {
-          completed++;
-          console.error(`[synthesize] ${preset} sentence ${i + 1}/${total} FAILED:`, err.message);
-          if (onProgress) onProgress(completed / total);
-          return null;
-        });
-    })
-  );
+  const results = new Array(total).fill(null);
+  let nextIndex = 0;
+
+  async function synthesizeOne(i) {
+    const text = sentences[i];
+    const startTime = performance.now();
+    let timeoutId = null;
+    const synthPromise = state.provider.synthesize(text, { speed: spd.speed });
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error(`Synthesis timed out after ${SYNTH_TIMEOUT_MS / 1000}s`)), SYNTH_TIMEOUT_MS);
+    });
+    try {
+      const res = await Promise.race([synthPromise, timeoutPromise]);
+      console.log(`[synthesize] ${preset} sentence ${i + 1}/${total} OK in ${((performance.now() - startTime) / 1000).toFixed(1)}s`);
+      return res;
+    } catch (err) {
+      console.error(`[synthesize] ${preset} sentence ${i + 1}/${total} FAILED:`, err.message);
+      if (isCorruptModelError(err)) throw err;
+      return null;
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+      completed++;
+      if (onProgress) onProgress(completed / total);
+    }
+  }
+
+  async function worker() {
+    while (nextIndex < total) {
+      const i = nextIndex++;
+      results[i] = await synthesizeOne(i);
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
   // Build concatenated PCM buffer and metadata
   const validResults = results.filter(r => r && r.audioData && r.audioData.length > 0);
@@ -1222,7 +1296,7 @@ async function loadExerciseAudio(ex) {
     // available when the user switches to an uncached exercise.
     if (!state.provider || !state.providerReady) {
       console.log(`[loadExerciseAudio #${seq}] Provider not ready — background init`);
-      initProvider().catch(err => console.warn('[loadExerciseAudio] Background provider init failed:', err.message));
+      initProviderWithCorruptModelRetry().catch(err => console.warn('[loadExerciseAudio] Background provider init failed:', err.message));
     }
     hideLoadingOverlay();
     updateProgress();
@@ -1243,7 +1317,7 @@ async function loadExerciseAudio(ex) {
         state.providerReady = false;
       }
       showLoadingOverlay();
-      await initProvider();
+      await initProviderWithCorruptModelRetry();
       // Check again — initProvider may have taken long enough for another call to start
       if (_loadAudioSeq !== seq) {
         console.log(`[loadExerciseAudio #${seq}] Aborted after initProvider — superseded by #${_loadAudioSeq}`);
@@ -1252,7 +1326,17 @@ async function loadExerciseAudio(ex) {
     }
 
     console.log(`[loadExerciseAudio #${seq}] Cache miss — synthesizing`, sentences.length, 'sentences');
-    await synthesizeAllSpeeds();
+    try {
+      await synthesizeAllSpeeds();
+    } catch (err) {
+      if (!isCorruptModelError(err)) throw err;
+      console.warn(`[loadExerciseAudio #${seq}] Model parse failed during synthesis — purging and retrying once.`);
+      state.provider = null;
+      state.providerReady = false;
+      await purgeVoiceAssetCache(VOICE_MODELS[state.voiceType]);
+      await initProviderWithCorruptModelRetry();
+      await synthesizeAllSpeeds();
+    }
     if (_loadAudioSeq !== seq) {
       console.log(`[loadExerciseAudio #${seq}] Aborted after synthesis — superseded by #${_loadAudioSeq}`);
       return;
@@ -1263,10 +1347,21 @@ async function loadExerciseAudio(ex) {
   } catch (err) {
     console.error(`[loadExerciseAudio #${seq}] Failed:`, err.message);
     state._initError = err.message || 'unknown error';
+    state.loadingMessage = `Audio preparation failed: ${state._initError}`;
+    state.loadingProgress = 0;
+    showLoadingOverlay();
+    document.querySelector('.loading-bar-fill')?.classList.remove('indeterminate');
+    updateLoadingOverlay();
   } finally {
     if (_loadAudioSeq !== seq) return;
-    hideLoadingOverlay();
     const hasAudio = state.audioBuffers[state.speedPreset];
+    if (hasAudio) {
+      hideLoadingOverlay();
+    } else if (state._initError) {
+      showLoadingOverlay();
+    } else {
+      hideLoadingOverlay();
+    }
     console.log(`audioLoadDone hasAudio=${!!hasAudio} playRequested=${state._playRequested} err=${state._initError || 'none'}`);
     if (state._playRequested && hasAudio) {
       state._playRequested = false;
