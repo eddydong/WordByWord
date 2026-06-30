@@ -381,11 +381,13 @@ function getSynthesisConcurrency() {
 
 function isCorruptModelError(err) {
   const message = String(err?.message || err || '');
-  return /protobuf parsing failed|failed to load model|can't create a session/i.test(message);
+  return /protobuf parsing failed|failed to load model|can't create a session|load failed/i.test(message);
 }
 
 async function purgeVoiceAssetCache(modelId) {
-  if (!modelId || !navigator.serviceWorker?.controller) return false;
+  if (!modelId) return false;
+  // Try the SW DELETE endpoint even if no controller is visible —
+  // the fetch will be intercepted if the SW is active.
   try {
     const res = await fetch(`/piper-gate/voices/${modelId}`, { method: 'DELETE' });
     console.log('[piper-cache] Purged voice asset cache:', modelId, res.status);
@@ -750,11 +752,13 @@ async function initProviderWithCorruptModelRetry() {
   try {
     await initProvider();
   } catch (err) {
-    if (!isCorruptModelError(err)) throw err;
-    console.warn('[initProvider] Model parse failed; purging cached voice assets and retrying once.');
+    console.warn('[initProvider] Init failed; purging cached voice assets and retrying once. Error:', err?.message || err);
     state.provider = null;
     state.providerReady = false;
     await purgeVoiceAssetCache(modelId);
+    // Reset and try again — transient failures (network blips, SW races,
+    // Safari fetch blocking) often succeed on the second attempt.
+    _initPromise = null;
     await initProvider();
   }
 }
