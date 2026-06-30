@@ -607,7 +607,7 @@ async function ue(e) {
 async function F(e, t) {
 	return (await ue(e)).toLowerCase() === t.toLowerCase();
 }
-var I = "infra", L = "voices", R = "270aa371f9f528df0363f012b8d878267bf41531ff0a6008fb26e552dceec654", z = "64fe111b343e21a537018c3bbfbff70917f4cb39ced6242cd7d35e4f166985d7", B = !1, V = new BroadcastChannel("piper-gate-debug");
+var I = "infra", L = "voices", R = "eeb85991a023632da80a16ef3c3141a623fe776a1516cc7a16738af925ff6fce", z = "64fe111b343e21a537018c3bbfbff70917f4cb39ced6242cd7d35e4f166985d7", B = !1, V = new BroadcastChannel("piper-gate-debug");
 V.onmessage = (e) => {
 	B = e.data.debug;
 }, N.addEventListener("message", (e) => {
