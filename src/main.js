@@ -2403,10 +2403,10 @@ const FONT_SCALES = { 'S': 0.85, 'M': 1, 'L': 1.2, 'XL': 1.4 };
 const FONT_SCALE_NAMES = ['S', 'M', 'L', 'XL'];
 
 const FONT_FAMILIES = {
-  rounded: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
-  sans:    '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
-  serif:   'Georgia, "Times New Roman", serif',
-  dyslexic:'"OpenDyslexic", "Comic Sans MS", cursive, sans-serif',
+  rounded: '"Comic Sans MS", "Comic Sans", "OpenDyslexic", cursive, sans-serif',
+  sans:    '"Comic Sans MS", "Comic Sans", "OpenDyslexic", cursive, sans-serif',
+  serif:   '"Comic Sans MS", "Comic Sans", "OpenDyslexic", cursive, sans-serif',
+  dyslexic:'"OpenDyslexic", "Comic Sans MS", "Comic Sans", cursive, sans-serif',
 };
 
 function loadFontPrefs() {
