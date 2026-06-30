@@ -11,6 +11,9 @@
 /piper-gate/infra/*.data
   Content-Type: application/octet-stream
 
+/piper-gate/infra/*.json
+  Content-Type: application/json
+
 /piper-gate/voices/*.onnx
   Content-Type: application/octet-stream
   Accept-Ranges: bytes
