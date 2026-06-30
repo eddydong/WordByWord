@@ -1,3 +1,12 @@
 /*
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
+
+/piper-gate/infra/*.wasm
+  Content-Type: application/wasm
+
+/piper-gate/infra/*.mjs
+  Content-Type: text/javascript
+
+/piper-gate/infra/*.data
+  Content-Type: application/octet-stream
