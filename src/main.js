@@ -1,35 +1,29 @@
 import { createPiperProvider } from 'piper-timing-farm-browser';
 
 // Pre-register the Service Worker as early as possible so it overlaps with
-// other page setup work.  Must resolve ONLY after the SW is controlling the
-// page — otherwise Piper worker fetch requests won't be intercepted and
-// voice model downloads will hit the SPA fallback (HTML) instead of the SW's
-// HuggingFace proxy.
+// other page setup work. We wait for .ready (installed + activated) so the
+// SW's clients.claim() has fired, but we do NOT block on the controller
+// becoming active — that avoids a race where the SW intercepts the Worker
+// constructor's own fetch for the worker script and fails it.
+//
+// Small .onnx.json voice config files are served directly by the origin
+// (no SPA fallback) as a safety net for the brief window before the SW
+// takes control. The large .onnx model files must go through the SW's
+// HuggingFace proxy — on the very first page load the user might need a
+// second attempt if they act before the SW claims, but on all subsequent
+// visits the SW is already controlling from page load.
 const _swReady = (async () => {
   if (!('serviceWorker' in navigator)) {
     return;
   }
 
-  const waitForController = () => {
-    if (navigator.serviceWorker.controller) return Promise.resolve();
-    return new Promise((resolve) => {
-      navigator.serviceWorker.addEventListener('controllerchange', () => resolve(), { once: true });
-      // Also resolve if already ready (belt and suspenders)
-      navigator.serviceWorker.ready.then(() => {
-        if (navigator.serviceWorker.controller) resolve();
-      });
-    });
-  };
-
-  // If already controlling, check for updates but don't block on them
+  // Already controlling — check for updates in the background
   if (navigator.serviceWorker.controller) {
     const reg = await navigator.serviceWorker.getRegistration();
     if (reg) {
       reg.update().catch(() => {});
       if (reg.waiting) {
         reg.waiting.postMessage({ type: 'SKIP_WAITING' });
-        // Wait for the new SW to take control before proceeding
-        await waitForController();
       }
       reg.addEventListener('updatefound', () => {
         const newWorker = reg.installing;
@@ -45,15 +39,19 @@ const _swReady = (async () => {
     return;
   }
 
-  // First visit: register and wait for control
-  await navigator.serviceWorker.register('/control-asset-sw.js', {
-    scope: '/',
-    type: 'module',
-  });
-  await navigator.serviceWorker.ready;
-  // SW might still not be "controlling" if this is the very first load;
-  // waitForController handles that edge case.
-  await waitForController();
+  // First visit: register, wait for activation, but don't block on
+  // controller — the SW calls clients.claim() on activate and will
+  // take control before user interaction.
+  try {
+    await navigator.serviceWorker.register('/control-asset-sw.js', {
+      scope: '/',
+      type: 'module',
+    });
+    await navigator.serviceWorker.ready;
+    console.log('[SW] Registered and activated');
+  } catch (err) {
+    console.warn('[SW] Registration failed:', err.message);
+  }
 })();
 
 // ─── Content Data ────────────────────────────────────────────────

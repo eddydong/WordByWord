@@ -2,4 +2,5 @@ node_modules/
 dist/
 .DS_Store
 public/piper-gate/voices/*.onnx
-public/piper-gate/voices/*.onnx.json
+# *.onnx.json configs ARE committed — they're ~5KB each and needed
+# so workers can read model parameters before the SW takes control
