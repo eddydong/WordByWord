@@ -1,24 +1,43 @@
 import { createPiperProvider } from 'piper-timing-farm-browser';
 
 // Pre-register the Service Worker as early as possible so it overlaps with
-// other page setup work. We wait for .ready (installed + activated) so the
-// SW's clients.claim() has fired, but we do NOT block on the controller
-// becoming active — that avoids a race where the SW intercepts the Worker
-// constructor's own fetch for the worker script and fails it.
+// other page setup work.  The SW is essential for voice model downloads: it
+// intercepts /piper-gate/voices/*.onnx requests and fetches them from
+// HuggingFace, caching in OPFS.  Without SW control the requests hit the
+// origin, which doesn't have the 60 MB model files, and SPA fallback returns
+// HTML that ONNX can't parse.
 //
-// Small .onnx.json voice config files are served directly by the origin
-// (no SPA fallback) as a safety net for the brief window before the SW
-// takes control. The large .onnx model files must go through the SW's
-// HuggingFace proxy — on the very first page load the user might need a
-// second attempt if they act before the SW claims, but on all subsequent
-// visits the SW is already controlling from page load.
+// We MUST wait for the controller to be active before creating Piper workers
+// (otherwise model downloads fail with "protobuf parsing failed").  We
+// previously tried NOT waiting (to avoid a race where the SW would intercept
+// the Worker constructor's fetch for its own script), but that race is no
+// longer an issue — the worker script's SHA-256 matches the SW's integrity
+// map, so the SW serves it correctly.
+//
+// Timeout after 8 seconds so we never hang the page indefinitely.
 const _swReady = (async () => {
   if (!('serviceWorker' in navigator)) {
     return;
   }
 
+  const waitForController = (timeoutMs) => {
+    if (navigator.serviceWorker.controller) return Promise.resolve();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        console.warn('[SW] Controller wait timed out after', timeoutMs, 'ms');
+        resolve();
+      }, timeoutMs);
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        clearTimeout(timer);
+        console.log('[SW] controllerchange — now controlling');
+        resolve();
+      }, { once: true });
+    });
+  };
+
   // Already controlling — check for updates in the background
   if (navigator.serviceWorker.controller) {
+    console.log('[SW] Already controlling');
     const reg = await navigator.serviceWorker.getRegistration();
     if (reg) {
       reg.update().catch(() => {});
@@ -39,16 +58,16 @@ const _swReady = (async () => {
     return;
   }
 
-  // First visit: register, wait for activation, but don't block on
-  // controller — the SW calls clients.claim() on activate and will
-  // take control before user interaction.
+  // First visit: register, wait for activation + controller
   try {
     await navigator.serviceWorker.register('/control-asset-sw.js', {
       scope: '/',
       type: 'module',
     });
     await navigator.serviceWorker.ready;
-    console.log('[SW] Registered and activated');
+    console.log('[SW] Activated — waiting for controller');
+    await waitForController(8000);
+    console.log('[SW] Controller ready:', !!navigator.serviceWorker.controller);
   } catch (err) {
     console.warn('[SW] Registration failed:', err.message);
   }
