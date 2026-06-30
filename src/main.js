@@ -706,6 +706,13 @@ async function initProvider() {
       state.loadingMessage = 'Loading…';
       document.querySelector('.loading-bar-fill')?.classList.add('indeterminate');
 
+      // Warm the Functions proxy so subsequent model downloads don't hit
+      // a cold start (especially impactful on slower iPad connections).
+      // Hit a small config file through the proxy to trigger Function init.
+      const warmupPath = `/proxy-hf/rinaldow/piper-onnx-durations/resolve/main/english/US/${state.voiceType === 'man' ? 'male' : 'female'}/${state.voiceType === 'man' ? 'Bryce' : 'Kristin'}/${modelId}.onnx.json`;
+      fetch(warmupPath).catch(() => {});
+      console.log('[initProvider] Proxy warmup sent:', warmupPath);
+
       const t0 = Date.now();
       const cpuInstances = getPiperCpuInstances();
 
@@ -2396,7 +2403,7 @@ const FONT_SCALES = { 'S': 0.85, 'M': 1, 'L': 1.2, 'XL': 1.4 };
 const FONT_SCALE_NAMES = ['S', 'M', 'L', 'XL'];
 
 const FONT_FAMILIES = {
-  rounded: '"SF Pro Rounded", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  rounded: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
   sans:    '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
   serif:   'Georgia, "Times New Roman", serif',
   dyslexic:'"OpenDyslexic", "Comic Sans MS", cursive, sans-serif',

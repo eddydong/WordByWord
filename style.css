@@ -3,6 +3,30 @@
    Default theme: "Blossom" (Pink) — designed for young learners
    ═══════════════════════════════════════════════════════════════════ */
 
+/* ─── Self-Hosted Fonts ────────────────────────────────────────── */
+
+@font-face {
+  font-family: 'OpenDyslexic';
+  src: url('/fonts/OpenDyslexic-Regular.woff') format('woff');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'OpenDyslexic';
+  src: url('/fonts/OpenDyslexic-Bold.woff') format('woff');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'OpenDyslexic';
+  src: url('/fonts/OpenDyslexic-Italic.woff') format('woff');
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
 /* ─── Theme Variables ──────────────────────────────────────────── */
 
 :root {
@@ -69,7 +93,7 @@
   --controls-h:     72px;
 
   /* Typography */
-  --font:           "SF Pro Rounded", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font:           -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-mono:      "SF Mono", ui-monospace, monospace;
   --font-size-base: 16px;
   --font-scale:     1;
@@ -399,7 +423,7 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px
   transform: translateX(-50%);
   font-size: 1.3rem;
   font-weight: 900;
-  font-family: "SF Pro Rounded", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-family: var(--font);
   color: #fff;
   background: linear-gradient(180deg, #fbbf24 0%, #d97706 100%);
   border: 3px solid #fcd34d;
