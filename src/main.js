@@ -1,40 +1,59 @@
 import { createPiperProvider } from 'piper-timing-farm-browser';
 
 // Pre-register the Service Worker as early as possible so it overlaps with
-// other page setup work. The provider will await this internally, but by
-// starting it now we hide the registration latency behind content parsing.
-const _swReady = (() => {
+// other page setup work.  Must resolve ONLY after the SW is controlling the
+// page — otherwise Piper worker fetch requests won't be intercepted and
+// voice model downloads will hit the SPA fallback (HTML) instead of the SW's
+// HuggingFace proxy.
+const _swReady = (async () => {
   if (!('serviceWorker' in navigator)) {
-    return Promise.resolve();
+    return;
   }
-  // If there's already a controller, check for updates so fixes take effect
-  // without requiring the user to manually update the SW.
-  if (navigator.serviceWorker.controller) {
-    return navigator.serviceWorker.getRegistration().then((reg) => {
-      if (reg) {
-        reg.update().catch(() => {});
-        // If a new SW is waiting, skipWaiting so it activates immediately
-        if (reg.waiting) {
-          reg.waiting.postMessage({ type: 'SKIP_WAITING' });
-        }
-        reg.addEventListener('updatefound', () => {
-          const newWorker = reg.installing;
-          if (!newWorker) return;
-          newWorker.addEventListener('statechange', () => {
-            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-              console.log('[SW] New version installed — reload to activate');
-              newWorker.postMessage({ type: 'SKIP_WAITING' });
-            }
-          });
-        });
-      }
-      return Promise.resolve();
+
+  const waitForController = () => {
+    if (navigator.serviceWorker.controller) return Promise.resolve();
+    return new Promise((resolve) => {
+      navigator.serviceWorker.addEventListener('controllerchange', () => resolve(), { once: true });
+      // Also resolve if already ready (belt and suspenders)
+      navigator.serviceWorker.ready.then(() => {
+        if (navigator.serviceWorker.controller) resolve();
+      });
     });
+  };
+
+  // If already controlling, check for updates but don't block on them
+  if (navigator.serviceWorker.controller) {
+    const reg = await navigator.serviceWorker.getRegistration();
+    if (reg) {
+      reg.update().catch(() => {});
+      if (reg.waiting) {
+        reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+        // Wait for the new SW to take control before proceeding
+        await waitForController();
+      }
+      reg.addEventListener('updatefound', () => {
+        const newWorker = reg.installing;
+        if (!newWorker) return;
+        newWorker.addEventListener('statechange', () => {
+          if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+            console.log('[SW] New version installed — activating');
+            newWorker.postMessage({ type: 'SKIP_WAITING' });
+          }
+        });
+      });
+    }
+    return;
   }
-  return navigator.serviceWorker.register('/control-asset-sw.js', {
+
+  // First visit: register and wait for control
+  await navigator.serviceWorker.register('/control-asset-sw.js', {
     scope: '/',
     type: 'module',
-  }).then(() => navigator.serviceWorker.ready);
+  });
+  await navigator.serviceWorker.ready;
+  // SW might still not be "controlling" if this is the very first load;
+  // waitForController handles that edge case.
+  await waitForController();
 })();
 
 // ─── Content Data ────────────────────────────────────────────────
