@@ -4,15 +4,19 @@
 
 /piper-gate/infra/*.wasm
   Content-Type: application/wasm
+  Cross-Origin-Resource-Policy: cross-origin
 
 /piper-gate/infra/*.mjs
   Content-Type: text/javascript
+  Cross-Origin-Resource-Policy: cross-origin
 
 /piper-gate/infra/*.data
   Content-Type: application/octet-stream
+  Cross-Origin-Resource-Policy: cross-origin
 
 /piper-gate/infra/*.json
   Content-Type: application/json
+  Cross-Origin-Resource-Policy: cross-origin
 
 /piper-gate/voices/*.onnx
   Content-Type: application/octet-stream
