@@ -698,18 +698,23 @@ async function loadExercise(index) {
     const repeatWasEnabled = state.repeatMode && state.dictMode !== 'programmed';
     const shouldPlay = (state.playing && !state.paused) || repeatWasEnabled;
     clearScrubResumeTimer();
-    _playGen++;
-    _repeatSeekInFlight = false;
-    if (repeatWasEnabled) state.repeatMode = false;
-    stopSrcNode();
+    _repeatSeekInFlight = repeatWasEnabled && shouldPlay;
+    if (repeatWasEnabled) setRepeatTargetIndex(sentIdx);
     stopPlayheadTracker();
-    state.playing = false;
-    state.paused = false;
+    if (!shouldPlay) {
+      stopSrcNode();
+      state.playing = false;
+      state.paused = false;
+    }
     state.elapsedMs = ms;
     state.sentenceIndex = sentIdx;
     try {
       if (shouldPlay) {
-        await seekToTime(ms, true, { snapProgress: true, playFromMs: ms });
+        await seekToTime(ms, true, {
+          snapProgress: true,
+          playFromMs: ms,
+          targetSentenceIndex: sentIdx,
+        });
       } else {
         highlightSentence(sentIdx, { scroll: false });
         updateProgress();
@@ -718,12 +723,12 @@ async function loadExercise(index) {
       }
     } finally {
       if (repeatWasEnabled) {
-        state.repeatMode = true;
         setRepeatTargetIndex(sentIdx);
         updateABButtons();
         highlightSentence(sentIdx, { scroll: false });
         updateProgress();
       }
+      _repeatSeekInFlight = false;
     }
   }
 
@@ -1338,7 +1343,10 @@ async function restartCurrentSentenceForRepeat() {
   state.sentenceIndex = repeatIdx;
   _repeatSeekInFlight = true;
   try {
-    await seekToTime(curBound.startMs, true, { snapProgress: true });
+    await seekToTime(curBound.startMs, true, {
+      snapProgress: true,
+      targetSentenceIndex: repeatIdx,
+    });
   } finally {
     _repeatSeekInFlight = false;
   }
@@ -2136,7 +2144,9 @@ async function doPlay(offsetSec, token) {
     return false;
   }
 
-  stopSrcNode();
+  const canSeekLivePlayer = state.srcNode === _player
+    && _player.dataset.preset === state.speedPreset;
+  if (!canSeekLivePlayer) stopSrcNode();
   if (!(await seekPlayerTo(Math.max(0, offsetSec), token))) {
     debugLog('[doPlay] cancelled during seek');
     return false;
@@ -2478,10 +2488,17 @@ function getSentenceJumpPlayMs(bound) {
   return Math.max(bound.startMs, Math.min(bound.endMs - 1, bound.startMs + 24));
 }
 
-async function seekToTime(ms, keepPlaying, { snapProgress = false, playFromMs = ms } = {}) {
+async function seekToTime(ms, keepPlaying, {
+  snapProgress = false,
+  playFromMs = ms,
+  targetSentenceIndex = null,
+} = {}) {
   clearScrubResumeTimer();
   state.elapsedMs = Math.max(0, Math.min(state.totalDurationMs, ms));
-  state.sentenceIndex = getSentenceAtTime(state.elapsedMs);
+  const resolvedSentenceIndex = Number.isInteger(targetSentenceIndex)
+    ? Math.max(0, Math.min(state.sentences.length - 1, targetSentenceIndex))
+    : getSentenceAtTime(state.elapsedMs);
+  state.sentenceIndex = resolvedSentenceIndex;
   if (state.repeatMode && state.dictMode !== 'programmed') setRepeatTargetIndex(state.sentenceIndex);
 
   const render = () => {
@@ -2776,6 +2793,7 @@ $('#btnPrev').addEventListener('click', () => {
     seekToTime(bound.startMs, wasPlaying, {
       snapProgress: true,
       playFromMs: getSentenceJumpPlayMs(bound),
+      targetSentenceIndex: idx,
     });
   } else {
     // Already at beginning, go to previous sentence
@@ -2785,6 +2803,7 @@ $('#btnPrev').addEventListener('click', () => {
       seekToTime(prevBound.startMs, wasPlaying, {
         snapProgress: true,
         playFromMs: getSentenceJumpPlayMs(prevBound),
+        targetSentenceIndex: prevIdx,
       });
     }
   }
@@ -2798,6 +2817,7 @@ $('#btnNext').addEventListener('click', () => {
     seekToTime(bound.startMs, wasPlaying, {
       snapProgress: true,
       playFromMs: getSentenceJumpPlayMs(bound),
+      targetSentenceIndex: nextIdx,
     });
   }
 });
@@ -2978,6 +2998,9 @@ $('#programmedLaps').addEventListener('change', () => {
     const ms = (pct / 100) * state.totalDurationMs;
     state.elapsedMs = Math.max(0, Math.min(state.totalDurationMs, ms));
     state.sentenceIndex = getSentenceAtTime(state.elapsedMs);
+    if (state.repeatMode && state.dictMode !== 'programmed') {
+      setRepeatTargetIndex(state.sentenceIndex);
+    }
     // suppress scroll during drag — panel stays put so the thumb and word
     // highlight are always visually in the same frame
     highlightSentence(state.sentenceIndex, { scroll: false });
@@ -3126,12 +3149,12 @@ document.addEventListener('keydown', (e) => {
     const wasPlaying = state.playing && !state.paused;
     const { ms, idx, bound } = getLiveTransportPosition();
     if (ms > bound.startMs + 500) {
-      seekToTime(bound.startMs, wasPlaying);
+      seekToTime(bound.startMs, wasPlaying, { targetSentenceIndex: idx });
     } else {
       const prevIdx = Math.max(0, idx - 1);
       if (prevIdx !== idx) {
         const prevBound = getSentenceMsBoundary(prevIdx);
-        seekToTime(prevBound.startMs, wasPlaying);
+        seekToTime(prevBound.startMs, wasPlaying, { targetSentenceIndex: prevIdx });
       }
     }
   } else if (key === 'e') {
@@ -3142,7 +3165,7 @@ document.addEventListener('keydown', (e) => {
     if (nextIdx !== idx) {
       const wasPlaying = state.playing && !state.paused;
       const bound = getSentenceMsBoundary(nextIdx);
-      seekToTime(bound.startMs, wasPlaying);
+      seekToTime(bound.startMs, wasPlaying, { targetSentenceIndex: nextIdx });
     }
   } else if (key === 'w') {
     e.preventDefault();
