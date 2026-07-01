@@ -135,6 +135,69 @@ const EXERCISES = [
     text:"Good morning, come in and have a seat. What seems to be the problem? I have been getting a really bad pain in one of my back teeth whenever I eat anything cold or sweet. It started about a week ago and it seems to be getting worse. Let me have a look. Can you open your mouth wide for me please? I am just going to take a quick look around. Is it very serious? I have been quite worried about it actually. I can see a small cavity in your lower right molar. It is not too deep at the moment but it will need a filling. If we leave it any longer the decay could reach the nerve and that would be much more painful and expensive to treat. Can you do the filling today? I am afraid my schedule is completely full today. But I can book you in for Thursday morning at ten thirty if that works for you. The procedure will take about forty-five minutes and you will be able to eat and drink normally a couple of hours afterwards. Thursday morning is fine. Thank you very much. In the meantime try to avoid very cold or sugary foods on that side of your mouth. I will see you on Thursday." },
 ];
 
+// ─── Content Metadata ────────────────────────────────────────────
+
+// Maps exam key → language/level for panel filtering
+const EXAM_META = {
+  PET: { language: 'en', level: 'B1', label: 'Cambridge B1 Preliminary (PET)' },
+};
+
+const PART_LABELS = {
+  1: 'Part 1 · Short Descriptions',
+  2: 'Part 2 · Monologue',
+  3: 'Part 3 · Announcements',
+  4: 'Part 4 · Conversation',
+};
+
+// Languages and their level systems shown in the panel
+const LANGUAGE_CONFIG = {
+  en: {
+    label: 'English',
+    levels: [
+      { id: 'A1',    label: 'A1' },
+      { id: 'A2',    label: 'A2 (KET)' },
+      { id: 'B1',    label: 'B1 (PET)' },
+      { id: 'B2',    label: 'B2 (FCE)' },
+      { id: 'C1',    label: 'C1 (CAE)' },
+      { id: 'C2',    label: 'C2 (CPE)' },
+      { id: 'TOEFL', label: 'TOEFL' },
+      { id: 'SAT',   label: 'SAT' },
+      { id: 'GRE',   label: 'GRE' },
+    ],
+  },
+  yue: {
+    label: 'Cantonese',
+    levels: [
+      { id: 'YUE-BASIC', label: 'Basic' },
+      { id: 'YUE-INT',   label: 'Intermediate' },
+      { id: 'YUE-ADV',   label: 'Advanced' },
+      { id: 'HKDSE',     label: 'HKDSE' },
+    ],
+  },
+  es: {
+    label: 'Spanish',
+    levels: [
+      { id: 'ES-A1',  label: 'A1' },
+      { id: 'ES-A2',  label: 'A2 (DELE)' },
+      { id: 'ES-B1',  label: 'B1 (DELE)' },
+      { id: 'ES-B2',  label: 'B2 (DELE)' },
+      { id: 'ES-C1',  label: 'C1 (DELE)' },
+      { id: 'ES-C2',  label: 'C2 (DELE)' },
+      { id: 'SELE',   label: 'SELE' },
+    ],
+  },
+};
+
+// ─── Material Panel State ─────────────────────────────────────────
+
+const mpState = {
+  open: false,
+  lang: 'en',
+  level: 'B1',
+  expandedMaterials: new Set(['PET']),
+  expandedParts: new Set(['PET-1']),
+};
+
 // ─── App State ───────────────────────────────────────────────────
 
 const state = {
@@ -400,57 +463,200 @@ async function purgeVoiceAssetCache(modelId) {
 
 // ─── UI Rendering ────────────────────────────────────────────────
 
-function renderSelectors() {
-  // Exam dropdown
-  const exams = [...new Set(state.exercises.map(e => e.exam))].sort();
-  const examSelect = $('#examSelect');
-  examSelect.innerHTML = exams.map(e => `<option value="${e}">${e}</option>`).join('');
-  examSelect.value = state.exercises[state.currentIndex].exam;
-  updatePartSelect();
+// ─── Material Panel Rendering ─────────────────────────────────────
+
+function getLevelsWithContent(lang) {
+  const result = new Set();
+  state.exercises.forEach(ex => {
+    const meta = EXAM_META[ex.exam];
+    if (meta && meta.language === lang) result.add(meta.level);
+  });
+  return result;
 }
 
-function updatePartSelect() {
-  const exam = $('#examSelect').value;
-  const examExercises = state.exercises.filter(e => e.exam === exam);
-  const parts = [...new Set(examExercises.map(e => e.part))].sort();
-  const partSelect = $('#partSelect');
-  partSelect.innerHTML = parts.map(p => {
-    const labels = {1:'Part 1', 2:'Part 2', 3:'Part 3', 4:'Part 4'};
-    return `<option value="${p}">${labels[p] || 'Part '+p}</option>`;
-  }).join('');
-  if (parts.length > 0) {
-    // Select current exercise's part if it belongs to this exam, otherwise first
-    const curPart = state.exercises[state.currentIndex]?.part;
-    partSelect.value = (curPart && parts.includes(curPart)) ? curPart : parts[0];
+function openMaterialPanel() {
+  // Ensure current exercise is visible when panel opens
+  const curEx = state.exercises[state.currentIndex];
+  if (curEx) {
+    const meta = EXAM_META[curEx.exam];
+    if (meta) {
+      mpState.lang = meta.language;
+      mpState.level = meta.level;
+      mpState.expandedMaterials.add(curEx.exam);
+      mpState.expandedParts.add(`${curEx.exam}-${curEx.part}`);
+    }
   }
-  updateExerciseSelect();
+  renderMaterialPanel();
+  mpState.open = true;
+  $('#mp-panel').classList.add('open');
+  $('#mp-overlay').classList.add('open');
+  setTimeout(() => {
+    const active = document.querySelector('#mp-panel .mp-exercise.active');
+    if (active) active.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, 310);
 }
 
-function updateExerciseSelect() {
-  const exam = $('#examSelect').value;
-  const part = +$('#partSelect').value;
-  const filtered = state.exercises.filter(e => e.exam === exam && e.part === part);
-  const sel = $('#exerciseSelect');
-  sel.innerHTML = filtered.map((e) => {
-    const origIdx = state.exercises.indexOf(e);
-    return `<option value="${origIdx}">${e.title}</option>`;
-  }).join('');
-  if (filtered.length > 0) {
-    // Keep current exercise if it's in this filtered list, otherwise select first
-    const curIdx = state.currentIndex;
-    const curInFiltered = filtered.some(e => state.exercises.indexOf(e) === curIdx);
-    sel.value = curInFiltered ? curIdx : state.exercises.indexOf(filtered[0]);
+function closeMaterialPanel() {
+  mpState.open = false;
+  $('#mp-panel').classList.remove('open');
+  $('#mp-overlay').classList.remove('open');
+}
+
+function renderMaterialPanel() {
+  // Language bar
+  const langBar = $('#mpLangBar');
+  langBar.innerHTML = Object.entries(LANGUAGE_CONFIG).map(([code, cfg]) =>
+    `<button class="mp-lang-btn${mpState.lang === code ? ' active' : ''}" data-lang="${code}">${cfg.label}</button>`
+  ).join('');
+  langBar.querySelectorAll('.mp-lang-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      mpState.lang = btn.dataset.lang;
+      const withContent = getLevelsWithContent(mpState.lang);
+      const levels = LANGUAGE_CONFIG[mpState.lang].levels;
+      const match = levels.find(l => withContent.has(l.id));
+      mpState.level = match ? match.id : (levels[0]?.id || '');
+      renderMaterialPanel();
+    });
+  });
+
+  // Level pills
+  const levelBar = $('#mpLevelBar');
+  const withContent = getLevelsWithContent(mpState.lang);
+  const levels = LANGUAGE_CONFIG[mpState.lang]?.levels || [];
+  levelBar.innerHTML = levels.map(l =>
+    `<button class="mp-level-pill${mpState.level === l.id ? ' active' : ''}${withContent.has(l.id) ? ' has-content' : ''}" data-level="${l.id}">${l.label}</button>`
+  ).join('');
+  levelBar.querySelectorAll('.mp-level-pill').forEach(btn => {
+    btn.addEventListener('click', () => {
+      mpState.level = btn.dataset.level;
+      renderMaterialPanel();
+    });
+  });
+
+  renderMaterialTree();
+}
+
+function renderMaterialTree() {
+  const tree = $('#mpTree');
+  const matchingExams = Object.entries(EXAM_META).filter(
+    ([, meta]) => meta.language === mpState.lang && meta.level === mpState.level
+  );
+
+  if (matchingExams.length === 0) {
+    tree.innerHTML = '<div class="mp-empty">No materials yet for this level.<br>More content coming soon! 🌱</div>';
+    return;
+  }
+
+  const chevron  = '<svg class="mp-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>';
+  const chevronSm = '<svg class="mp-chevron-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>';
+
+  let html = '';
+  for (const [examKey, examMeta] of matchingExams) {
+    const expanded = mpState.expandedMaterials.has(examKey);
+    const examExercises = state.exercises.filter(e => e.exam === examKey);
+    const parts = [...new Set(examExercises.map(e => e.part))].sort((a, b) => a - b);
+
+    html += `<div class="mp-material${expanded ? ' expanded' : ''}" data-exam="${examKey}">`;
+    html += `<div class="mp-material-header" role="button" aria-expanded="${expanded}">${chevron}<span class="mp-material-icon">📖</span><span class="mp-material-label">${examMeta.label}</span></div>`;
+    html += `<div class="mp-parts">`;
+
+    for (const part of parts) {
+      const partKey = `${examKey}-${part}`;
+      const partExpanded = mpState.expandedParts.has(partKey);
+      const partExercises = examExercises.filter(e => e.part === part);
+      const partLabel = PART_LABELS[part] || `Part ${part}`;
+
+      html += `<div class="mp-part${partExpanded ? ' expanded' : ''}" data-part-key="${partKey}">`;
+      html += `<div class="mp-part-header" role="button" aria-expanded="${partExpanded}">${chevronSm}<span class="mp-part-label">${partLabel}</span></div>`;
+      html += `<div class="mp-exercises">`;
+
+      partExercises.forEach((ex, i) => {
+        const exIdx = state.exercises.indexOf(ex);
+        const isActive = exIdx === state.currentIndex;
+        const num = String(i + 1).padStart(2, '0');
+        html += `<div class="mp-exercise${isActive ? ' active' : ''}" data-idx="${exIdx}" role="treeitem" aria-selected="${isActive}"><span class="mp-exercise-num">${num}</span><span class="mp-exercise-title">${escapeHtml(ex.title)}</span></div>`;
+      });
+
+      html += `</div></div>`; // mp-exercises, mp-part
+    }
+
+    html += `</div></div>`; // mp-parts, mp-material
+  }
+
+  tree.innerHTML = html;
+
+  // Expand/collapse: materials
+  tree.querySelectorAll('.mp-material-header').forEach(header => {
+    const node = header.closest('.mp-material');
+    const examKey = node.dataset.exam;
+    header.addEventListener('click', () => {
+      const isExpanded = node.classList.toggle('expanded');
+      header.setAttribute('aria-expanded', isExpanded);
+      if (isExpanded) mpState.expandedMaterials.add(examKey);
+      else mpState.expandedMaterials.delete(examKey);
+    });
+  });
+
+  // Expand/collapse: parts
+  tree.querySelectorAll('.mp-part-header').forEach(header => {
+    const node = header.closest('.mp-part');
+    const partKey = node.dataset.partKey;
+    header.addEventListener('click', () => {
+      const isExpanded = node.classList.toggle('expanded');
+      header.setAttribute('aria-expanded', isExpanded);
+      if (isExpanded) mpState.expandedParts.add(partKey);
+      else mpState.expandedParts.delete(partKey);
+    });
+  });
+
+  // Exercise leaf click → load + close panel
+  tree.querySelectorAll('.mp-exercise').forEach(el => {
+    el.addEventListener('click', () => {
+      loadExercise(+el.dataset.idx);
+      closeMaterialPanel();
+    });
+  });
+}
+
+function syncMaterialPanel() {
+  // Update active exercise highlight without full re-render
+  const tree = $('#mpTree');
+  if (!tree) return;
+  tree.querySelectorAll('.mp-exercise').forEach(el => {
+    const isActive = +el.dataset.idx === state.currentIndex;
+    el.classList.toggle('active', isActive);
+    el.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  });
+  // Update trigger button context label
+  const ctxEl = $('#btnMaterialsCtx');
+  if (ctxEl) {
+    const ex = state.exercises[state.currentIndex];
+    ctxEl.textContent = ex ? `${ex.exam} · P${ex.part}` : 'Materials';
   }
 }
+
+function initMaterialPanel() {
+  renderMaterialPanel();
+  $('#btnMaterials').addEventListener('click', openMaterialPanel);
+  $('#mp-overlay').addEventListener('click', closeMaterialPanel);
+  $('#mpClose').addEventListener('click', closeMaterialPanel);
+  // Swipe-left to close (touch)
+  let _touchStartX = 0;
+  $('#mp-panel').addEventListener('touchstart', e => { _touchStartX = e.touches[0].clientX; }, { passive: true });
+  $('#mp-panel').addEventListener('touchend', e => {
+    if (e.changedTouches[0].clientX - _touchStartX < -60) closeMaterialPanel();
+  }, { passive: true });
+}
+
+
 
 async function loadExercise(index) {
   stop();
   state.currentIndex = index;
   const ex = state.exercises[index];
   console.log(`loadExercise(${index})`, ex.title);
-  // Sync selectors to reflect loaded exercise (setting .value doesn't fire change)
-  $('#examSelect').value = ex.exam;
-  updatePartSelect();
+  // Sync panel to reflect loaded exercise
+  syncMaterialPanel();
   state.sentences = splitSentences(ex.text);
   state.sentenceIndex = 0;
   state.elapsedMs = 0;
@@ -482,8 +688,14 @@ async function loadExercise(index) {
 
       // Calculate timeline position for this word
       const bound = getSentenceMsBoundary(sentIdx);
-      const fraction = bound.wordCount > 1 ? wordIdx / (bound.wordCount - 1) : 0;
-      state.elapsedMs = bound.startMs + fraction * (bound.endMs - bound.startMs);
+      if (bound.words && bound.words[wordIdx] !== undefined) {
+        // Use actual synthesis word timing for precise seeking
+        state.elapsedMs = bound.words[wordIdx].startMs;
+      } else {
+        const wCount = bound.wordCount || words.length;
+        const fraction = wCount > 1 ? wordIdx / (wCount - 1) : 0;
+        state.elapsedMs = bound.startMs + fraction * (bound.endMs - bound.startMs);
+      }
       state.sentenceIndex = sentIdx;
 
       highlightSentence(sentIdx);
@@ -883,7 +1095,13 @@ async function setSpeed(preset) {
   if (!SPEED_PRESETS[preset]) return;
 
   const wasPlaying = state.playing && !state.paused;
-  const savedMs = state.elapsedMs;
+
+  // Capture position as sentence-index + fraction BEFORE switching timelines.
+  // Raw elapsedMs from one speed cannot be used directly in another speed's
+  // buffer — the total duration and per-sentence boundaries differ.
+  const oldMs = wasPlaying ? currentAudioTime() * 1000 : state.elapsedMs;
+  const oldMeta = state.ttsMeta;
+  const oldSentIdx = getSentenceAtTime(oldMs);
 
   if (wasPlaying) stopSrcNode();
 
@@ -891,9 +1109,29 @@ async function setSpeed(preset) {
   state.ttsMeta = state.ttsMetaBySpeed[preset] || state.ttsMeta;
   state.totalDurationMs = state.ttsMeta ? state.ttsMeta.durationMs : 0;
 
+  // Map old position into the new speed's timeline via sentence fraction.
+  let newMs = oldMs;
+  if (oldMeta && oldMeta.sentences && state.ttsMeta && state.ttsMeta.sentences) {
+    const oldBound = oldMeta.sentences[oldSentIdx];
+    const newBound = state.ttsMeta.sentences[oldSentIdx];
+    if (oldBound && newBound) {
+      const sentDur = oldBound.endMs - oldBound.startMs;
+      const fraction = sentDur > 0
+        ? Math.max(0, Math.min(1, (oldMs - oldBound.startMs) / sentDur))
+        : 0;
+      newMs = newBound.startMs + fraction * (newBound.endMs - newBound.startMs);
+    } else if (newBound) {
+      newMs = newBound.startMs;
+    }
+  }
+
+  // Re-render segments for the new speed's boundaries
+  renderProgressSegments();
+
   if (wasPlaying) {
-    await seekToTime(savedMs, true);
+    await seekToTime(newMs, true);
   } else {
+    state.elapsedMs = newMs;
     updateProgress();
   }
 }
@@ -924,12 +1162,69 @@ function ensureAudioCtx() {
 // context (click handler) or it will stay suspended indefinitely.
 async function resumeAudioCtx() {
   ensureAudioCtx();
-  if (state.audioCtx.state === 'suspended') {
-    await state.audioCtx.resume();
+
+  // Try the normal resume path first (handles 'suspended')
+  const ctx = state.audioCtx;
+  if (ctx.state === 'suspended' || ctx.state === 'interrupted') {
+    try {
+      await ctx.resume();
+    } catch (_) {
+      // Some browsers throw when trying to resume an interrupted context.
+      // Fall through to the recreation path below.
+    }
   }
+
+  // If the context is still not running (macOS audio-session interruption,
+  // or a browser that refuses to resume without a fresh context), close the
+  // dead instance and rebuild a brand-new one, migrating the PCM buffers so
+  // no re-synthesis is required.
   if (state.audioCtx.state !== 'running') {
-    throw new Error('AudioContext not running — browser may be blocking audio');
+    await recreateAudioContext();
   }
+
+  if (state.audioCtx.state !== 'running') {
+    throw new Error(`AudioContext unrecoverable. State: ${state.audioCtx.state}`);
+  }
+}
+
+// Close a stuck/interrupted AudioContext and open a fresh one, copying all
+// PCM data into new AudioBuffers so playback can resume without re-synthesis.
+async function recreateAudioContext() {
+  console.warn('[AudioCtx] Recreating interrupted/stuck context. State:', state.audioCtx?.state);
+
+  // Extract PCM from existing buffers while the old context is still alive
+  const savedPcm = {};
+  for (const [preset, buf] of Object.entries(state.audioBuffers)) {
+    if (buf && buf.length > 0) {
+      savedPcm[preset] = { pcm: buf.getChannelData(0).slice(), sampleRate: buf.sampleRate };
+    }
+  }
+
+  // Close the dead context (fire-and-forget — don't let a stall block play)
+  const old = state.audioCtx;
+  state.audioCtx = null;
+  old?.close().catch(() => {});
+
+  // A new AudioContext created from within a user-gesture call chain starts
+  // in 'running' state on all major browsers, bypassing the interruption.
+  state.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+  // Some browsers still start the fresh context in 'suspended' — try
+  // resuming immediately while we are still in the gesture call chain.
+  if (state.audioCtx.state === 'suspended') {
+    await state.audioCtx.resume().catch(() => {});
+  }
+
+  // Rebuild AudioBuffers in the new context from the saved PCM data
+  state.audioBuffers = {};
+  for (const [preset, { pcm, sampleRate }] of Object.entries(savedPcm)) {
+    const buf = state.audioCtx.createBuffer(1, pcm.length, sampleRate);
+    buf.copyToChannel(pcm, 0);
+    state.audioBuffers[preset] = buf;
+  }
+
+  console.log('[AudioCtx] Recreated. State:', state.audioCtx.state,
+    '| Presets:', Object.keys(state.audioBuffers).join(', ') || 'none');
 }
 
 // ─── Exercise Loading (Piper WASM synthesis) ────────────────────────
@@ -1034,7 +1329,7 @@ async function synthesizeAtSpeed(preset, onProgress) {
       totalSamples += sampleLen;
 
       // Compute per-word timing from phoneme data
-      const words = buildWordTimings(sentences[i], r.metadata, startSample, sampleRate);
+      const words = buildWordTimings(sentences[i], r.metadata, startSample, sampleRate, durMs);
 
       metaSentences.push({
         startMs: (startSample / sampleRate) * 1000,
@@ -1080,10 +1375,11 @@ async function synthesizeAtSpeed(preset, onProgress) {
 
 // ─── Phoneme-to-Word Timings ────────────────────────────────────────
 
-function buildWordTimings(sentenceText, metadata, sentenceStartSample, sampleRate) {
+function buildWordTimings(sentenceText, metadata, sentenceStartSample, sampleRate, sentenceDurationMs = 0) {
   const words = sentenceText.split(/\s+/).filter(w => w);
   if (!metadata || !metadata.phonemes || !metadata.durations || words.length === 0) {
-    return buildFallbackWordTimings(sentenceText, (sentenceStartSample / sampleRate) * 1000, 0);
+    // Pass real sentence duration so fallback word timings are proportional, not zero-width
+    return buildFallbackWordTimings(sentenceText, (sentenceStartSample / sampleRate) * 1000, sentenceDurationMs);
   }
 
   const phonemes = metadata.phonemes;       // string[]
@@ -1322,6 +1618,8 @@ async function loadExerciseAudio(ex) {
       initProviderWithCorruptModelRetry().catch(err => console.warn('[loadExerciseAudio] Background provider init failed:', err.message));
     }
     hideLoadingOverlay();
+    // Segment positions were rendered with estimates; re-render with real meta.
+    renderProgressSegments();
     updateProgress();
     if (state._playRequested && state.audioBuffers[state.speedPreset]) {
       state._playRequested = false;
@@ -1466,18 +1764,31 @@ async function doPlay(offsetSec) {
 
   state.srcNode = src;
   state.srcStartOffset = offsetSec;
-  state.srcStartedAt = state.audioCtx.currentTime;
   state.playing = true;
   state.paused = false;
 
   src.onended = () => {
     console.log('[doPlay] src.onended fired');
-    if (state.srcNode === src) {
-      state.srcNode = null;
+    if (state.srcNode !== src) return; // was already stopped via stopSrcNode()
+    state.srcNode = null;
+
+    if (state.dictMode !== 'programmed') {
+      // Free mode: audio ran to the end naturally. Clean up so Play works again.
+      state.playing = false;
+      state.elapsedMs = 0;
+      state.sentenceIndex = 0;
+      stopPlayheadTracker();
+      setPlayIcon(false);
+      $('#btnPlay').classList.add('primary');
+      highlightSentence(0);
+      updateProgress();
     }
   };
-  // Use currentTime as "when" — passing 0 may be in the past and silently dropped
+  // Record srcStartedAt with the SAME timestamp used for src.start() so that
+  // currentAudioTime() = audioCtx.currentTime - srcStartedAt + srcStartOffset
+  // stays exactly in sync with the audio engine clock.
   const now = state.audioCtx.currentTime;
+  state.srcStartedAt = now;
   src.start(now, offsetSec);
   console.log('[doPlay] src.start() called at ctx time:', now, 'offset:', offsetSec, 'playing:', state.playing);
   setPlayIcon(true);
@@ -1540,18 +1851,19 @@ async function play() {
   startPlayheadTracker();
 }
 
-let _playheadTimer = null;
+let _rafId = null;
 
 function startPlayheadTracker() {
   stopPlayheadTracker();
-  _playheadTimer = setInterval(() => {
+
+  function tick() {
     if (!state.playing || state.paused) {
       stopPlayheadTracker();
       return;
     }
+
     const t = currentAudioTime();
     state.elapsedMs = t * 1000;
-
     const newIdx = getSentenceAtTime(state.elapsedMs);
 
     // Handle programmed mode — detect sentence boundary crossing
@@ -1589,11 +1901,18 @@ function startPlayheadTracker() {
       highlightSentence(newIdx);
     }
     updateProgress();
-  }, 100);
+
+    // Stop looping if srcNode was cleared externally (onended already cleaned up)
+    if (!state.srcNode && !state.playing) return;
+
+    _rafId = requestAnimationFrame(tick);
+  }
+
+  _rafId = requestAnimationFrame(tick);
 }
 
 function stopPlayheadTracker() {
-  if (_playheadTimer) { clearInterval(_playheadTimer); _playheadTimer = null; }
+  if (_rafId !== null) { cancelAnimationFrame(_rafId); _rafId = null; }
 }
 
 // ─── Lap Gap (writing pause between sentence replays in programmed mode) ──
@@ -1715,8 +2034,9 @@ let _playGen = 0;
 
 function pause() {
   if (!state.playing || state.paused) return;
-  stopSrcNode();
+  // Capture position BEFORE nulling srcNode — currentAudioTime() needs it
   state.elapsedMs = currentAudioTime() * 1000;
+  stopSrcNode();
   state.paused = true;
   stopPlayheadTracker();
   updateProgress();
@@ -2041,6 +2361,15 @@ console.log('[init] Wiring events. btnPlay:', !!$('#btnPlay'));
 }
 
 $('#btnPlay').addEventListener('click', () => {
+  // ── Gesture-synchronous AudioContext recovery ──────────────────────────────
+  // Safari requires AudioContext.resume() to be called SYNCHRONOUSLY from a
+  // user-event handler. Any await before the call loses the gesture token,
+  // making the call fail — even after a page reload in the same window.
+  // Calling it here (before any async hop) maximises compatibility.
+  if (state.audioCtx && state.audioCtx.state !== 'running') {
+    state.audioCtx.resume().catch(() => {});
+  }
+  // ──────────────────────────────────────────────────────────────────────────
   console.log('[click] btnPlay fired. playing:', state.playing, 'paused:', state.paused, 'dictMode:', state.dictMode, 'inLapGap:', state.inLapGap);
   if (state.dictMode === 'programmed') {
     if (state.playing || state.paused || state.inLapGap) {
@@ -2169,34 +2498,6 @@ $('#btnToggleInput').addEventListener('click', () => {
   }
 });
 
-// Re-entrancy guard: Safari can fire spurious change events when
-// innerHTML is set on a <select>, which could cause infinite loops or
-// revert to the wrong exercise during selector sync.
-let _suppressSelectorEvents = false;
-
-$('#examSelect').addEventListener('change', () => {
-  if (_suppressSelectorEvents) return;
-  _suppressSelectorEvents = true;
-  updatePartSelect();
-  loadExercise(+$('#exerciseSelect').value);
-  _suppressSelectorEvents = false;
-});
-
-$('#partSelect').addEventListener('change', () => {
-  if (_suppressSelectorEvents) return;
-  _suppressSelectorEvents = true;
-  updateExerciseSelect();
-  loadExercise(+$('#exerciseSelect').value);
-  _suppressSelectorEvents = false;
-});
-
-$('#exerciseSelect').addEventListener('change', () => {
-  if (_suppressSelectorEvents) return;
-  _suppressSelectorEvents = true;
-  loadExercise(+$('#exerciseSelect').value);
-  _suppressSelectorEvents = false;
-});
-
 $('#voiceSelect').addEventListener('change', () => {
   state.voiceType = $('#voiceSelect').value;
   switchVoice(state.voiceType);
@@ -2302,6 +2603,11 @@ $('#programmedLaps').addEventListener('change', () => {
 let keyScrubActive = false;
 
 document.addEventListener('keydown', (e) => {
+  // Same eager resume as the Play button handler — keyboard gestures carry
+  // the same activation token and should restore a suspended context.
+  if (state.audioCtx && state.audioCtx.state !== 'running') {
+    state.audioCtx.resume().catch(() => {});
+  }
   // When input panel is visible, require Shift to avoid interfering with typing.
   // When hidden, no Shift needed — shortcuts work directly.
   if (state.inputVisible) {
@@ -2480,7 +2786,25 @@ $('#scoreClose').addEventListener('click', () => {
 // Init font prefs
 applyFontPrefs(loadFontPrefs());
 
-renderSelectors();
+// ─── AudioContext visibility recovery ────────────────────────────────────────
+// On macOS, when another app steals the audio session (system sounds, media
+// players, etc.) while this window is in the background, the browser may move
+// the AudioContext into 'interrupted' state.  When the window comes back into
+// view, attempt a silent resume so that a simple Play tap is enough to restart
+// audio — without needing a new browser window.
+//
+// Chrome honours resume() from a visibilitychange handler.
+// Safari may not (gesture policy), but the next Play tap triggers
+// resumeAudioCtx() → recreateAudioContext() which always works.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !state.audioCtx) return;
+  if (state.audioCtx.state === 'running') return;
+  console.log('[AudioCtx] visibilitychange — state:', state.audioCtx.state, '— attempting silent resume');
+  state.audioCtx.resume().catch(() => {});
+});
+
+initMaterialPanel();
+
 // Sync dictMode UI to match state. The id was changed from 'dictMode' to
 // 'dictModeSelect' to prevent browser autofill from restoring a stale value
 // across sessions (autofill matches by id/name).
