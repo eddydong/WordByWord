@@ -225,6 +225,7 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px
   grid-template-rows: 1fr auto 1fr;
   overflow: hidden;
   position: relative;
+  transition: grid-template-rows 0.42s cubic-bezier(0.22, 0.9, 0.18, 1);
 }
 
 /* ─── Top Panel (Transcript) ───────────────────────────────────── */
@@ -232,8 +233,15 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px
 #top-panel {
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 20px 24px;
+  /* bottom padding keeps transcript words above the progress-bar strip
+     which floats 30px above the controls bar (top:-30px, height:24px) */
+  padding: 20px 24px 36px;
   -webkit-overflow-scrolling: touch;
+}
+
+#transcriptText {
+  position: relative;
+  isolation: isolate;
 }
 
 .exercise-badge {
@@ -253,15 +261,16 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px
 }
 
 .transcript-blurred .sentence {
-  filter: blur(9px);
   cursor: default;
-  transition: filter 0.3s;
 }
 .transcript-blurred .sentence.active {
-  filter: blur(4px);
+  box-shadow: none;
 }
 .sentence {
   display: inline;
+  --blur-ink: var(--text);
+  --blur-playhead-ink: var(--text);
+  --blur-radius: 0.68em;
   line-height: 2.2;
   font-size: 1.08rem;
   padding: 3px 6px;
@@ -272,12 +281,16 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px
 .sentence.active {
   background: var(--accent);
   color: white;
+  --blur-ink: #fff;
+  --blur-playhead-ink: var(--blur-ink);
   transform: scale(1.03);
   box-shadow: 0 2px 8px var(--accent-glow);
 }
 .sentence.active.repeat {
   background: var(--amber-400);
   color: var(--gray-800);
+  --blur-ink: var(--gray-800);
+  --blur-playhead-ink: var(--blur-ink);
   box-shadow: 0 2px 8px rgba(251, 191, 36, 0.35);
   animation: repeatPulse 1.2s ease-in-out infinite;
 }
@@ -287,28 +300,117 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px
 }
 
 /* Word-level playhead tracker within active sentence */
+.transcript-playhead {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  border-radius: 6px;
+  background: rgba(255,255,255,0.24);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.22);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 0;
+  will-change: left, top, width, height;
+  transition: left 0.16s linear, top 0.16s linear, width 0.16s linear, height 0.16s linear, opacity 0.12s ease, background 0.12s linear, box-shadow 0.12s linear;
+}
+.transcript-playhead.visible {
+  opacity: 1;
+}
+.transcript-playhead.no-transition {
+  transition: none;
+}
+.transcript-playhead.repeat {
+  background: rgba(0,0,0,0.14);
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.12);
+}
+
 .sentence .word {
-  transition: color 0.15s, background 0.15s;
-  border-radius: 3px;
-  padding: 1px 2px;
+  display: inline;
+  transition: color 0.15s, background 0.15s, box-shadow 0.15s;
+  border-radius: 6px;
+  padding: 0 0.18em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.sentence .word-text {
+  position: relative;
+  z-index: 1;
+  transition: text-shadow 0.3s, color 0.15s, opacity 0.3s;
+}
+.transcript-blurred .sentence .word {
+  transition: none;
+}
+.transcript-blurred .sentence .word-text {
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  text-shadow: 0 0 var(--blur-radius) var(--blur-ink);
+  opacity: 1;
+}
+.transcript-blurred .sentence.active .word-text {
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  text-shadow: 0 0 var(--blur-radius) var(--blur-ink);
+  opacity: 1;
+}
+.transcript-blurred .sentence.active.repeat .word-text {
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  text-shadow: 0 0 var(--blur-radius) var(--blur-ink);
+  opacity: 1;
+}
+/* Instantly update word highlight while the progress bar is being dragged */
+body.dragging-seek .sentence .word {
+  transition: none;
+}
+body.dragging-seek .sentence .word-text {
+  transition: none;
 }
 .sentence.active .word.spoken {
   color: rgba(255,255,255,0.65);
 }
 .sentence.active .word.speaking {
-  background: rgba(255,255,255,0.35);
   color: #fff;
-  box-shadow: 0 0 0 2px rgba(255,255,255,0.3);
-  border-radius: 4px;
+  border-radius: 6px;
+  font-weight: 700;
+}
+.transcript-blurred .sentence.active .word.spoken {
+  color: inherit;
+}
+.transcript-blurred .sentence.active.repeat .word.spoken {
+  color: inherit;
+}
+.transcript-blurred .sentence.active.repeat {
+  color: var(--gray-800);
+}
+.transcript-blurred .sentence.active .word.speaking,
+.transcript-blurred .sentence.active.repeat .word.speaking {
+  border-radius: 6px;
+  box-shadow: none;
+  font-weight: inherit;
+}
+.transcript-blurred .sentence.active .word.speaking .word-text,
+.transcript-blurred .sentence.active.repeat .word.speaking .word-text {
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  text-shadow: 0 0 var(--blur-radius) var(--blur-playhead-ink);
+  opacity: 1;
+}
+.transcript-blurred .sentence.active .word.speaking {
+  color: rgba(124, 29, 64, 0.78);
+  text-shadow: none;
+}
+.transcript-blurred .sentence.active.repeat .word.speaking {
+  color: rgba(31, 41, 55, 0.82);
+  text-shadow: none;
 }
 /* Repeat mode overrides — dark text on amber background */
 .sentence.active.repeat .word.spoken {
   color: rgba(0,0,0,0.45);
 }
 .sentence.active.repeat .word.speaking {
-  background: rgba(0,0,0,0.15);
   color: var(--gray-800);
-  box-shadow: 0 0 0 2px rgba(0,0,0,0.2);
 }
 
 /* ─── Controls Bar (Splitter) ──────────────────────────────────── */
@@ -340,6 +442,13 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px
   border-radius: var(--radius-full);
   cursor: pointer;
   box-shadow: inset 0 1px 3px rgba(0,0,0,0.06);
+}
+
+#progressSegments {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
 }
 
 .progress-fill {
@@ -392,7 +501,7 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px
 
 .progress-thumb {
   position: absolute;
-  top: 2px;
+  top: 1px;
   width: 22px; height: 22px;
   background: var(--white);
   border: 3px solid var(--accent);
@@ -413,6 +522,12 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px
   inset: 3px;
   background: var(--accent);
   border-radius: 50%;
+}
+
+body.progress-snapping .progress-fill,
+body.progress-snapping .progress-thumb,
+body.progress-snapping .progress-segment {
+  transition: none;
 }
 
 /* ─── Laps-left indicator on progress bar ───────────────────────── */
@@ -544,12 +659,15 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px
 /* ─── Bottom Panel (Dictation) ─────────────────────────────────── */
 
 #bottom-panel {
+  max-height: 100%;
   padding: 14px 24px 18px;
   display: flex;
   flex-direction: column;
   gap: 10px;
   overflow: hidden;
-  transition: max-height 0.3s ease, padding 0.3s ease, opacity 0.3s ease;
+  opacity: 1;
+  will-change: opacity, max-height;
+  transition: max-height 0.42s cubic-bezier(0.22, 0.9, 0.18, 1), padding 0.42s cubic-bezier(0.22, 0.9, 0.18, 1), opacity 0.24s ease;
 }
 #bottom-panel.hidden {
   max-height: 0;
@@ -876,7 +994,7 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px
   .brand h1 { font-size: 0.95rem; }
   .brand .subtitle { display: none; }
 
-  #top-panel    { padding: 14px 16px; }
+  #top-panel    { padding: 14px 16px 28px; } /* 28px clears the 24px mobile progress-bar overhang */
   #bottom-panel { padding: 10px 16px 14px; gap: 8px; }
 
   #controls-bar { padding: 0 8px; gap: 8px; }
@@ -974,19 +1092,20 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px
 /* ─── Material Center Panel ─────────────────────────────────────── */
 
 .mp-overlay {
-  display: none;
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.4);
   z-index: 200;
   -webkit-backdrop-filter: blur(2px);
   backdrop-filter: blur(2px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.32s ease, backdrop-filter 0.32s ease, -webkit-backdrop-filter 0.32s ease;
 }
 .mp-overlay.open {
-  display: block;
-  animation: mpFadeIn 0.22s ease;
+  opacity: 1;
+  pointer-events: auto;
 }
-@keyframes mpFadeIn { from { opacity: 0; } to { opacity: 1; } }
 
 .mp-panel {
   position: fixed;
@@ -999,11 +1118,15 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px
   z-index: 201;
   display: flex;
   flex-direction: column;
-  transform: translateX(-100%);
-  transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
-  will-change: transform;
+  opacity: 0;
+  transform: translateX(-116%) scale(0.98);
+  transition: transform 0.42s cubic-bezier(0.2, 0.9, 0.16, 1), opacity 0.28s ease, box-shadow 0.42s ease;
+  will-change: transform, opacity;
 }
-.mp-panel.open { transform: translateX(0); }
+.mp-panel.open {
+  opacity: 1;
+  transform: translateX(0) scale(1);
+}
 
 /* Panel header */
 .mp-head {

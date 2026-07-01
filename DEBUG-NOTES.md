@@ -92,3 +92,43 @@ The `_headers` file sets:
 All static assets served under these paths need `Cross-Origin-Resource-Policy: cross-origin`.
 The SW's synthetic responses also need it (see top of this file). Without COOP/COEP,
 SharedArrayBuffer (required by ONNX WASM) is unavailable.
+
+## AudioContext — Safari/macOS lesson (final architecture)
+
+**Symptom:** After backgrounding for a few minutes (Space switch, display sleep,
+another app grabs the audio session) playback runs but is **silent**.
+`resume()` reports state `running`, the clock advances, but no sound comes out.
+Hard reload does **not** fix it — the same renderer process keeps the wedged
+audio session. Only a brand-new window (= new OS process/session) recovered.
+
+**Root cause confirmed via clock probe:** after returning, a brand-new
+`AudioContext` created inside a user gesture, resumed to `running`, with valid
+non-zero PCM, still rendered SILENCE while its clock kept advancing.
+This is a known, unfixed WebKit bug in the Web Audio output pipeline.
+
+**What does NOT work:**
+- Resume-only (`audioCtx.resume()`) — the reported state lies.
+- Hard-recreating the `AudioContext` per click — Safari allows only ~4 contexts
+  per page; leaking contexts (not closing the old one) causes permanent silence.
+  Even recreate + `close()` + kick buffer fails: same bug, different context.
+
+**What works: use `HTMLAudioElement` instead of Web Audio for playback.**
+`HTMLAudioElement` uses the platform media pipeline (the path music/podcast apps
+use), which is designed to survive interruptions and output-route changes. The
+next `play()` call from a gesture reliably restarts the output route.
+
+**Current implementation (`src/main.js`):**
+- A single `const _player = new Audio()` element is created at module load.
+- PCM from Piper synthesis is encoded to a 16-bit WAV `Blob` (`pcmToWavBlob`)
+  and a `URL.createObjectURL` blob URL is stored per speed preset
+  (`state.audioURLs`). The raw `Float32Array` is kept in `state.audioPCM` for
+  IndexedDB caching.
+- `doPlay(offsetSec)` sets `_player.currentTime`, calls `_player.play()`, and
+  drives timing entirely from `_player.currentTime` via `requestAnimationFrame`.
+- `unlockPlayerSync()` plays a 1-sample muted WAV inside the first gesture to
+  satisfy autoplay policy; subsequent `play()` calls succeed without a gesture.
+- No `AudioContext` is used. Web Audio APIs (`createBufferSource`, `resume`,
+  `onstatechange`) are gone from the playback path entirely.
+
+**IndexedDB cache** stores the raw `Float32Array` PCM (same as before); blob
+URLs are re-created from it on restore since blob URLs don't survive reloads.

@@ -690,7 +690,7 @@ N.addEventListener("install", () => {
 			return;
 		}
 		if (n.endsWith(".map")) {
-			e.respondWith(new Response("{}", {
+			e.respondWith(new Response('{"version":3,"sources":[],"names":[],"mappings":""}', {
 				status: 200,
 				headers: { "Content-Type": "application/json" },
 			}));

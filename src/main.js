@@ -1,5 +1,16 @@
 import { createPiperProvider } from 'piper-timing-farm-browser';
 
+let APP_DEBUG = false;
+try {
+  APP_DEBUG = globalThis.localStorage?.getItem('wbw-debug') === '1';
+} catch (_) {
+  APP_DEBUG = false;
+}
+
+function debugLog(...args) {
+  if (APP_DEBUG) console.log(...args);
+}
+
 // Pre-register the Service Worker as early as possible so it overlaps with
 // other page setup work.  The SW is essential for voice model downloads: it
 // intercepts /piper-gate/voices/*.onnx requests and fetches them from
@@ -29,7 +40,7 @@ const _swReady = (async () => {
       }, timeoutMs);
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         clearTimeout(timer);
-        console.log('[SW] controllerchange — now controlling');
+        debugLog('[SW] controllerchange — now controlling');
         resolve();
       }, { once: true });
     });
@@ -37,7 +48,7 @@ const _swReady = (async () => {
 
   // Already controlling — check for updates in the background
   if (navigator.serviceWorker.controller) {
-    console.log('[SW] Already controlling');
+    debugLog('[SW] Already controlling');
     const reg = await navigator.serviceWorker.getRegistration();
     if (reg) {
       reg.update().catch(() => {});
@@ -49,7 +60,7 @@ const _swReady = (async () => {
         if (!newWorker) return;
         newWorker.addEventListener('statechange', () => {
           if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-            console.log('[SW] New version installed — activating');
+            debugLog('[SW] New version installed — activating');
             newWorker.postMessage({ type: 'SKIP_WAITING' });
           }
         });
@@ -65,9 +76,9 @@ const _swReady = (async () => {
       type: 'module',
     });
     await navigator.serviceWorker.ready;
-    console.log('[SW] Activated — waiting for controller');
+    debugLog('[SW] Activated — waiting for controller');
     await waitForController(8000);
-    console.log('[SW] Controller ready:', !!navigator.serviceWorker.controller);
+    debugLog('[SW] Controller ready:', !!navigator.serviceWorker.controller);
   } catch (err) {
     console.warn('[SW] Registration failed:', err.message);
   }
@@ -205,6 +216,7 @@ const state = {
   currentIndex: 0,
   sentences: [],
   sentenceIndex: 0,
+  repeatSentenceIndex: null,
   playing: false,
   paused: false,
   speedPreset: 'normal',       // 'slow'|'normal'|'fast'
@@ -218,12 +230,14 @@ const state = {
   // Piper WASM engine
   provider: null,              // PiperProvider instance
   providerReady: false,        // whether provider.init() completed
-  audioCtx: null,              // AudioContext (resumed on user gesture)
-  audioBuffers: {},            // { slow: AudioBuffer, normal: AudioBuffer, fast: AudioBuffer }
+  audioCtx: null,              // legacy; no longer used for playback
+  audioBuffers: {},            // legacy; superseded by audioURLs
+  audioURLs: {},               // { slow|normal|fast: blob URL } played via <audio>
+  audioPCM: {},                // { slow|normal|fast: {data:Float32Array, sampleRate, length} } for caching
   ttsMetaBySpeed: {},          // { slow: meta, normal: meta, fast: meta }
-  srcNode: null,               // current AudioBufferSourceNode
-  srcStartOffset: 0,           // offset in seconds when srcNode started
-  srcStartedAt: 0,             // audioCtx.currentTime when srcNode started
+  srcNode: null,               // set to the <audio> element while it is playing
+  srcStartOffset: 0,           // offset in seconds when playback (re)started
+  srcStartedAt: 0,             // legacy timing field (unused with <audio>)
   // TTS metadata & timing
   ttsMeta: null,               // reference to ttsMetaBySpeed[speedPreset]
   totalDurationMs: 0,
@@ -250,21 +264,18 @@ const state = {
 if (import.meta.hot) {
   const prev = window.__wbw_preserved;
   if (prev) {
-    if (prev.provider) {
+    if (prev.provider && prev.providerDebug === APP_DEBUG) {
       state.provider = prev.provider;
       state.providerReady = prev.providerReady;
-      console.log('[HMR] Restored Piper provider');
+      debugLog('[HMR] Restored Piper provider');
     }
-    if (prev.audioCtx) {
-      state.audioCtx = prev.audioCtx;
-      console.log('[HMR] Restored AudioContext');
-    }
-    if (prev.audioBuffers && Object.keys(prev.audioBuffers).length > 0) {
-      state.audioBuffers = prev.audioBuffers;
+    if (prev.audioURLs && Object.keys(prev.audioURLs).length > 0) {
+      state.audioURLs = prev.audioURLs;
+      state.audioPCM = prev.audioPCM || {};
       state.ttsMetaBySpeed = prev.ttsMetaBySpeed || {};
       state.ttsMeta = prev.ttsMeta;
       state.totalDurationMs = prev.totalDurationMs;
-      console.log('[HMR] Restored audio buffers');
+      debugLog('[HMR] Restored audio URLs');
     }
     window.__wbw_preserved = null;
   }
@@ -272,8 +283,9 @@ if (import.meta.hot) {
     window.__wbw_preserved = {
       provider: state.provider,
       providerReady: state.providerReady,
-      audioCtx: state.audioCtx,
-      audioBuffers: state.audioBuffers,
+      providerDebug: APP_DEBUG,
+      audioURLs: state.audioURLs,
+      audioPCM: state.audioPCM,
       ttsMetaBySpeed: state.ttsMetaBySpeed,
       ttsMeta: state.ttsMeta,
       totalDurationMs: state.totalDurationMs,
@@ -307,6 +319,10 @@ function setPlayIcon(playing) {
       $('#btnPlay').innerHTML = ICONS.play + ' Start';
       $('#btnPlay').classList.add('primary');
     }
+  } else if (state.scrubbing) {
+    $('#btnPlay').innerHTML = state.scrubDir < 0
+      ? ICONS.rew + ' REW'
+      : ICONS.fwd + ' FFWD';
   } else {
     $('#btnPlay').innerHTML = playing ? ICONS.pause + ' Pause' : ICONS.play + ' Play';
   }
@@ -314,6 +330,8 @@ function setPlayIcon(playing) {
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
+
+let _inputPanelPreferredBottomH = 0;
 
 // ─── Draggable Splitter ──────────────────────────────────────────
 
@@ -365,6 +383,7 @@ const $$ = (sel) => document.querySelectorAll(sel);
     // Persist the ratio
     const h = getHeights();
     const avail = h.total - bar.getBoundingClientRect().height;
+    _inputPanelPreferredBottomH = h.bottom;
     mainArea.style.gridTemplateRows = h.top + 'px ' + bar.getBoundingClientRect().height + 'px ' + h.bottom + 'px';
   });
 
@@ -397,6 +416,7 @@ const $$ = (sel) => document.querySelectorAll(sel);
     document.body.style.cursor = '';
     const h = getHeights();
     const barH = bar.getBoundingClientRect().height;
+    _inputPanelPreferredBottomH = h.bottom;
     mainArea.style.gridTemplateRows = h.top + 'px ' + barH + 'px ' + h.bottom + 'px';
   });
 })();
@@ -453,7 +473,7 @@ async function purgeVoiceAssetCache(modelId) {
   // the fetch will be intercepted if the SW is active.
   try {
     const res = await fetch(`/piper-gate/voices/${modelId}`, { method: 'DELETE' });
-    console.log('[piper-cache] Purged voice asset cache:', modelId, res.status);
+    debugLog('[piper-cache] Purged voice asset cache:', modelId, res.status);
     return res.ok;
   } catch (err) {
     console.warn('[piper-cache] Voice asset purge failed:', err);
@@ -654,58 +674,92 @@ async function loadExercise(index) {
   stop();
   state.currentIndex = index;
   const ex = state.exercises[index];
-  console.log(`loadExercise(${index})`, ex.title);
+  debugLog(`loadExercise(${index})`, ex.title);
   // Sync panel to reflect loaded exercise
   syncMaterialPanel();
   state.sentences = splitSentences(ex.text);
   state.sentenceIndex = 0;
   state.elapsedMs = 0;
   state.ttsMeta = null;
-  state.audioBuffers = {};
+  resetAudioAssets();
   state.ttsMetaBySpeed = {};
   state._initError = null;
 
   $('#exerciseBadge').textContent = `Part ${ex.part} · Exercise ${index + 1}`;
   $('#exerciseTitle').textContent = ex.title;
   $('#transcriptText').innerHTML = state.sentences.map((s, i) => {
-    const words = s.split(' ').map(w => `<span class="word">${w}</span>`).join(' ');
+    // Tokenize identically to buildWordTimings so word spans and word timings
+    // are always 1:1 (any mismatch would desync the text and the progress bar).
+    const words = s.split(/\s+/).filter(Boolean).map(w => `<span class="word"><span class="word-text">${w}</span></span>`).join(' ');
     return `<span class="sentence" data-idx="${i}">${words}</span> `;
   }).join('');
+
+  async function jumpToSentenceMs(sentIdx, ms) {
+    const repeatWasEnabled = state.repeatMode && state.dictMode !== 'programmed';
+    const shouldPlay = (state.playing && !state.paused) || repeatWasEnabled;
+    clearScrubResumeTimer();
+    _playGen++;
+    _repeatSeekInFlight = false;
+    if (repeatWasEnabled) state.repeatMode = false;
+    stopSrcNode();
+    stopPlayheadTracker();
+    state.playing = false;
+    state.paused = false;
+    state.elapsedMs = ms;
+    state.sentenceIndex = sentIdx;
+    try {
+      if (shouldPlay) {
+        await seekToTime(ms, true, { snapProgress: true, playFromMs: ms });
+      } else {
+        highlightSentence(sentIdx, { scroll: false });
+        updateProgress();
+        setPlayIcon(false);
+        $('#btnPlay').classList.add('primary');
+      }
+    } finally {
+      if (repeatWasEnabled) {
+        state.repeatMode = true;
+        setRepeatTargetIndex(sentIdx);
+        updateABButtons();
+        highlightSentence(sentIdx, { scroll: false });
+        updateProgress();
+      }
+    }
+  }
+
+  // Sentence-level click: jump to that sentence start and, if playback was
+  // already running, continue from there so repeat mode retargets immediately.
+  $('#transcriptText').querySelectorAll('.sentence').forEach(el => {
+    el.addEventListener('click', () => {
+      const sentIdx = +el.dataset.idx;
+      const bound = getSentenceMsBoundary(sentIdx);
+      const ms = Math.max(bound.startMs, Math.min(bound.endMs - 1, bound.startMs));
+      void jumpToSentenceMs(sentIdx, ms);
+    });
+  });
 
   // Word-level click: position playhead at exact word in the timeline
   $('#transcriptText').querySelectorAll('.word').forEach(el => {
     el.addEventListener('click', (e) => {
       e.stopPropagation();
-      const wasPlaying = state.playing && !state.paused;
-      stopSrcNode();
-      stopPlayheadTracker();
-      state.playing = false; state.paused = false;
-
       const sentEl = el.closest('.sentence');
       const sentIdx = +sentEl.dataset.idx;
       const words = [...sentEl.querySelectorAll('.word')];
       const wordIdx = words.indexOf(el);
 
-      // Calculate timeline position for this word
+      // Seek to this word's start on the shared timeline. The clicked sentence
+      // is the source of truth for WHICH sentence — we clamp the seek strictly
+      // inside it so the highlight, fill and thumb always resolve to THIS
+      // sentence even if the word timings are imprecise or overflow the segment.
       const bound = getSentenceMsBoundary(sentIdx);
-      if (bound.words && bound.words[wordIdx] !== undefined) {
-        // Use actual synthesis word timing for precise seeking
-        state.elapsedMs = bound.words[wordIdx].startMs;
+      let ms;
+      if (bound.words && bound.words[wordIdx]) {
+        ms = bound.words[wordIdx].startMs;
       } else {
-        const wCount = bound.wordCount || words.length;
-        const fraction = wCount > 1 ? wordIdx / (wCount - 1) : 0;
-        state.elapsedMs = bound.startMs + fraction * (bound.endMs - bound.startMs);
+        const frac = words.length > 0 ? wordIdx / words.length : 0;
+        ms = bound.startMs + frac * (bound.endMs - bound.startMs);
       }
-      state.sentenceIndex = sentIdx;
-
-      highlightSentence(sentIdx);
-      updateProgress();
-      setPlayIcon(false);
-      $('#btnPlay').classList.add('primary');
-
-      if (wasPlaying) {
-        setTimeout(() => play(), 80);
-      }
+      void jumpToSentenceMs(sentIdx, Math.max(bound.startMs, Math.min(bound.endMs - 1, ms)));
     });
   });
 
@@ -729,59 +783,124 @@ async function loadExercise(index) {
   loadExerciseAudio(ex);
 }
 
-function highlightSentence(idx) {
+let _transcriptPlayheadWord = null;
+
+function ensureTranscriptPlayhead() {
+  const host = $('#transcriptText');
+  if (!host) return null;
+
+  let playhead = host.querySelector('.transcript-playhead');
+  if (!playhead) {
+    playhead = document.createElement('div');
+    playhead.className = 'transcript-playhead';
+    host.prepend(playhead);
+  }
+  return playhead;
+}
+
+function syncTranscriptPlayhead(wordEl, { animate = true, force = false } = {}) {
+  const host = $('#transcriptText');
+  const playhead = ensureTranscriptPlayhead();
+  if (!host || !playhead) return;
+
+  playhead.classList.toggle('repeat', state.repeatMode);
+
+  if (!wordEl) {
+    playhead.classList.remove('visible', 'no-transition');
+    _transcriptPlayheadWord = null;
+    return;
+  }
+
+  const sameWord = _transcriptPlayheadWord === wordEl;
+  if (sameWord && !force) {
+    playhead.classList.add('visible');
+    return;
+  }
+
+  const previousSentence = _transcriptPlayheadWord?.closest('.sentence');
+  const nextSentence = wordEl.closest('.sentence');
+  const shouldAnimate = animate && !!_transcriptPlayheadWord && previousSentence === nextSentence;
+
+  if (!shouldAnimate) playhead.classList.add('no-transition');
+
+  const hostRect = host.getBoundingClientRect();
+  const wordRect = wordEl.getBoundingClientRect();
+  playhead.style.left = (wordRect.left - hostRect.left) + 'px';
+  playhead.style.top = (wordRect.top - hostRect.top) + 'px';
+  playhead.style.width = wordRect.width + 'px';
+  playhead.style.height = wordRect.height + 'px';
+  playhead.classList.add('visible');
+
+  if (!shouldAnimate) {
+    void playhead.offsetWidth;
+    playhead.classList.remove('no-transition');
+  }
+
+  _transcriptPlayheadWord = wordEl;
+}
+
+function refreshTranscriptPlayhead() {
+  requestAnimationFrame(() => updateWordHighlight({ animate: false, forcePlayhead: true }));
+}
+
+function highlightSentence(idx, { scroll = true, animateWordPlayhead = false } = {}) {
   state.sentenceIndex = idx;
   const els = document.querySelectorAll('.sentence');
   els.forEach((el, i) => {
     el.classList.toggle('active', i === idx);
     el.classList.toggle('repeat', i === idx && state.repeatMode);
   });
-  if (els[idx]) {
+  if (scroll && els[idx]) {
     els[idx].scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
-  updateWordHighlight();
+  updateWordHighlight({ animate: animateWordPlayhead });
 }
 
-function updateWordHighlight() {
-  // During active playback, srcNode is set — use precise word timing
+function updateWordHighlight({ animate = true, forcePlayhead = false } = {}) {
   const idx = state.sentenceIndex;
   const sentEls = document.querySelectorAll('.sentence');
-  if (!sentEls[idx]) return;
+  if (!sentEls[idx]) {
+    syncTranscriptPlayhead(null);
+    return;
+  }
 
   const bound = getSentenceMsBoundary(idx);
   const words = sentEls[idx].querySelectorAll('.word');
-  if (words.length === 0) return;
+  if (words.length === 0) {
+    syncTranscriptPlayhead(null);
+    return;
+  }
 
   document.querySelectorAll('.word').forEach(w => {
     w.classList.remove('spoken', 'speaking');
   });
 
-  const elapsedInSent = Math.max(0, state.elapsedMs - bound.startMs);
-
-  // Use per-word phoneme timings if available
-  if (bound.words && bound.words.length > 0 && bound.words.length === words.length) {
-    let speakingIdx = -1;
-    for (let i = 0; i < bound.words.length; i++) {
-      const w = bound.words[i];
-      if (elapsedInSent >= w.startMs - bound.startMs && elapsedInSent < w.endMs - bound.startMs) {
-        speakingIdx = i;
-        break;
-      }
+  // The playhead sits in exactly one word. Word timings tile the sentence in
+  // the SAME timeline as the thumb, so the speaking word is always the one
+  // under the thumb — the two forms stay locked together.
+  const timings = (bound.words && bound.words.length === words.length) ? bound.words : null;
+  let speakingIdx;
+  if (timings) {
+    speakingIdx = 0;
+    for (let i = 0; i < timings.length; i++) {
+      if (state.elapsedMs >= timings[i].startMs - 1) speakingIdx = i;
+      else break;
     }
-    words.forEach((w, i) => {
-      if (i < speakingIdx) w.classList.add('spoken');
-      else if (i === speakingIdx) w.classList.add('speaking');
-    });
+    // Past the final word's end — whole sentence is spoken.
+    if (state.elapsedMs >= timings[timings.length - 1].endMs - 1) speakingIdx = words.length;
   } else {
-    // Fallback: character-length proportion
-    const sentDuration = bound.endMs - bound.startMs;
-    const fraction = sentDuration > 0 ? Math.min(1, elapsedInSent / sentDuration) : 0;
-    const spokenCount = Math.floor(fraction * words.length);
-    words.forEach((w, i) => {
-      if (i < spokenCount) w.classList.add('spoken');
-      else if (i === spokenCount) w.classList.add('speaking');
-    });
+    const span = bound.endMs - bound.startMs;
+    const frac = span > 0 ? Math.max(0, Math.min(1, (state.elapsedMs - bound.startMs) / span)) : 0;
+    speakingIdx = Math.min(words.length, Math.floor(frac * words.length));
   }
+
+  words.forEach((w, i) => {
+    if (i < speakingIdx) w.classList.add('spoken');
+    else if (i === speakingIdx) w.classList.add('speaking');
+  });
+
+  const speakingWord = speakingIdx < words.length ? words[speakingIdx] : null;
+  syncTranscriptPlayhead(speakingWord, { animate, force: forcePlayhead });
 }
 
 function updateABButtons() {
@@ -819,11 +938,13 @@ function updateProgress() {
   const sentStartPct = total ? (bound.startMs / total) * 100 : 0;
   const sentEndPct = total ? (bound.endMs / total) * 100 : 100;
 
-  // Fill only the current sentence's segment, up to the playhead position
-  const fillWidth = Math.max(0, currentPct - sentStartPct);
+  // Fill only the current sentence's segment, up to the playhead position.
+  // Clamp to the sentence so the fill can never bleed into adjacent sentences.
+  const clampedPct = Math.max(sentStartPct, Math.min(sentEndPct, currentPct));
+  const fillWidth = clampedPct - sentStartPct;
   $('#progressFill').style.left = sentStartPct + '%';
   $('#progressFill').style.width = fillWidth + '%';
-  $('#progressFill').style.borderRadius = fillWidth > 0 ? '0' : '';
+  $('#progressFill').style.borderRadius = '999px';
 
   $('#progressThumb').style.left = currentPct + '%';
 
@@ -878,9 +999,12 @@ function renderProgressSegments() {
     const startPct = (bound.startMs / total) * 100;
     const endPct = (bound.endMs / total) * 100;
     const width = endPct - startPct;
+    const tick = i > 0
+      ? `<div class="progress-tick" data-idx="${i}" style="left:${startPct.toFixed(2)}%"></div>`
+      : '';
     parts.push(
       `<div class="progress-segment" data-idx="${i}" style="left:${startPct.toFixed(2)}%;width:${width.toFixed(2)}%"></div>` +
-      `<div class="progress-tick" data-idx="${i}" style="left:${startPct.toFixed(2)}%"></div>`
+      tick
     );
   }
   container.innerHTML = parts.join('');
@@ -893,7 +1017,7 @@ let _initPromise = null; // prevents concurrent initProvider() calls
 async function initProvider() {
   // If already initializing, wait for that to finish instead of racing
   if (_initPromise) {
-    console.log('[initProvider] Already initializing — waiting for existing init');
+    debugLog('[initProvider] Already initializing — waiting for existing init');
     await _initPromise;
     return;
   }
@@ -911,7 +1035,7 @@ async function initProvider() {
       }
 
       if (!state.provider) {
-        state.provider = createPiperProvider({ debug: true });
+        state.provider = createPiperProvider({ debug: APP_DEBUG });
       }
       const INIT_TIMEOUT_MS = 90_000;
 
@@ -923,7 +1047,7 @@ async function initProvider() {
       // Hit a small config file through the proxy to trigger Function init.
       const warmupPath = `/proxy-hf/rinaldow/piper-onnx-durations/resolve/main/english/US/${state.voiceType === 'man' ? 'male' : 'female'}/${state.voiceType === 'man' ? 'Bryce' : 'Kristin'}/${modelId}.onnx.json`;
       fetch(warmupPath).catch(() => {});
-      console.log('[initProvider] Proxy warmup sent:', warmupPath);
+      debugLog('[initProvider] Proxy warmup sent:', warmupPath);
 
       const t0 = Date.now();
       const cpuInstances = getPiperCpuInstances();
@@ -947,10 +1071,7 @@ async function initProvider() {
       document.querySelector('.loading-bar-fill')?.classList.remove('indeterminate');
 
       state.providerReady = true;
-      if (!state.audioCtx) {
-        state.audioCtx = new AudioContext();
-      }
-      console.log(`[initProvider] ready in ${((Date.now() - t0) / 1000).toFixed(1)}s with cpuInstances=${cpuInstances}`);
+      debugLog(`[initProvider] ready in ${((Date.now() - t0) / 1000).toFixed(1)}s with cpuInstances=${cpuInstances}`);
     } catch (err) {
       document.querySelector('.loading-bar-fill')?.classList.remove('indeterminate');
       console.error('[initProvider] FAILED:', err.message, '| stack:', err.stack);
@@ -987,7 +1108,7 @@ async function switchVoice(voiceType) {
   if (wasPlaying) stopSrcNode();
 
   state.ttsMeta = null;
-  state.audioBuffers = {};
+  resetAudioAssets();
   state.ttsMetaBySpeed = {};
   state.elapsedMs = 0;
   state.sentenceIndex = 0;
@@ -996,7 +1117,7 @@ async function switchVoice(voiceType) {
   updateProgress();
 
   if (state.sentences.length > 0 && await loadAudioFromCache()) {
-    console.log('[switchVoice] Cache hit for voice:', voiceType);
+    debugLog('[switchVoice] Cache hit for voice:', voiceType);
     renderProgressSegments();
     updateProgress();
     if (wasPlaying) {
@@ -1034,6 +1155,36 @@ async function switchVoice(voiceType) {
   if (wasPlaying) {
     await seekToTime(0, true);
   }
+}
+
+// ─── Audio-blocked banner ───────────────────────────────────────────────────
+// Shown when HTMLAudioElement.play() is rejected (autoplay policy or other
+// error). Guides the user to interact with the page.
+
+function showAudioBlockedBanner() {
+  if (document.getElementById('audio-blocked-banner')) return;
+  const el = document.createElement('div');
+  el.id = 'audio-blocked-banner';
+  el.style.cssText = [
+    'position:fixed', 'bottom:16px', 'left:50%', 'transform:translateX(-50%)',
+    'background:#1a1a2e', 'color:#fff', 'padding:12px 20px', 'border-radius:12px',
+    'font-family:var(--font,sans-serif)', 'font-size:0.85rem', 'z-index:9999',
+    'box-shadow:0 4px 20px rgba(0,0,0,0.4)', 'display:flex', 'align-items:center',
+    'gap:12px', 'max-width:90vw',
+  ].join(';');
+  el.innerHTML = `<span>🔇 Audio unavailable in this window</span>
+    <a href="${location.href}" target="_blank" rel="noopener"
+      style="background:#e8458b;color:#fff;padding:6px 14px;border-radius:8px;
+             text-decoration:none;font-weight:700;white-space:nowrap">
+      Open new window
+    </a>
+    <button onclick="this.closest('#audio-blocked-banner').remove()"
+      style="background:none;border:none;color:#aaa;font-size:1.2rem;cursor:pointer;padding:0 2px">✕</button>`;
+  document.body.appendChild(el);
+}
+
+function hideAudioBlockedBanner() {
+  document.getElementById('audio-blocked-banner')?.remove();
 }
 
 // ─── Loading Overlay ───────────────────────────────────────────────
@@ -1139,104 +1290,246 @@ async function setSpeed(preset) {
 // ─── Audio Engine Helpers ──────────────────────────────────────────
 
 function currentAudioTime() {
-  if (!state.srcNode || !state.audioCtx) return state.elapsedMs / 1000;
-  return state.audioCtx.currentTime - state.srcStartedAt + state.srcStartOffset;
+  if (state.srcNode === _player) return _player.currentTime;
+  return state.elapsedMs / 1000;
 }
 
 function stopSrcNode() {
-  if (state.srcNode) {
-    try { state.srcNode.stop(); } catch (_) { /* already stopped */ }
-    state.srcNode = null;
+  try {
+    _player.pause();
+    _player.playbackRate = 1;
+  } catch (_) { /* ignore */ }
+  state.srcNode = null;
+  _playerToken = 0;
+}
+
+let _repeatSeekInFlight = false;
+let _playerToken = 0;
+
+function getRepeatTargetIndex() {
+  if (typeof state.repeatSentenceIndex === 'number'
+    && state.repeatSentenceIndex >= 0
+    && state.repeatSentenceIndex < state.sentences.length) {
+    return state.repeatSentenceIndex;
+  }
+  return state.sentenceIndex;
+}
+
+function setRepeatTargetIndex(idx) {
+  const clamped = Math.max(0, Math.min(state.sentences.length - 1, idx));
+  state.repeatSentenceIndex = clamped;
+  return clamped;
+}
+
+function syncRepeatTargetToCurrentPosition() {
+  const ms = state.playing && !state.paused ? currentAudioTime() * 1000 : state.elapsedMs;
+  const idx = setRepeatTargetIndex(getSentenceAtTime(ms));
+  state.sentenceIndex = idx;
+  return idx;
+}
+
+async function restartCurrentSentenceForRepeat() {
+  if (_repeatSeekInFlight) return;
+  if (!state.repeatMode || state.dictMode === 'programmed') return;
+  if (!state.playing || state.paused || state.scrubbing) return;
+
+  const repeatIdx = getRepeatTargetIndex();
+  const curBound = getSentenceMsBoundary(repeatIdx);
+  state.sentenceIndex = repeatIdx;
+  _repeatSeekInFlight = true;
+  try {
+    await seekToTime(curBound.startMs, true, { snapProgress: true });
+  } finally {
+    _repeatSeekInFlight = false;
   }
 }
 
-// Create the AudioContext if needed — does NOT resume (requires user gesture).
-// Safe to call during page load for buffer creation / cache restoration.
-function ensureAudioCtx() {
-  if (!state.audioCtx) {
-    state.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+// ─── HTMLAudioElement playback (Safari/macOS interruption-proof) ─────────────
+//
+// Web Audio's AudioContext OUTPUT dies permanently after a macOS/iOS Safari
+// audio-session interruption (backgrounding for a few minutes, Space switch,
+// display sleep). Verified via the clock probe: after returning, a brand-new
+// AudioContext created inside a user gesture, resumed to 'running', with valid
+// non-zero PCM, still renders SILENCE while its clock keeps advancing. A plain
+// reload does not clear it because the same renderer process keeps the wedged
+// audio session; only a brand-new window/process recovered.
+//
+// HTMLMediaElement uses the platform media pipeline (the path music/podcast
+// apps use), which is designed to survive interruptions and output-route
+// changes. So playback goes through a single <audio> element and ALL timing is
+// driven from audio.currentTime. No AudioContext is used for playback.
+// See webapp/DEBUG-NOTES.md "AudioContext — Safari/macOS lesson".
+
+const _player = new Audio();
+_player.preload = 'auto';
+_player.setAttribute('playsinline', '');
+try { _player.style.display = 'none'; (document.body || document.documentElement).appendChild(_player); } catch (_) { /* ignore */ }
+
+_player.addEventListener('timeupdate', () => {
+  if (!state.repeatMode || state.dictMode === 'programmed') return;
+  if (state.srcNode !== _player || !state.playing || state.paused || state.scrubbing) return;
+
+  const curBound = getSentenceMsBoundary(getRepeatTargetIndex());
+  const elapsedMs = _player.currentTime * 1000;
+  if (elapsedMs >= curBound.endMs - 10) {
+    restartCurrentSentenceForRepeat();
   }
+});
+
+// Natural end of playback (free mode). Programmed mode stops earlier in the tracker.
+_player.addEventListener('ended', () => {
+  if (state.srcNode !== _player) return;
+
+  if (state.repeatMode && state.dictMode !== 'programmed') {
+    restartCurrentSentenceForRepeat();
+    return;
+  }
+
+  state.srcNode = null;
+  if (state.dictMode !== 'programmed') {
+    state.playing = false;
+    state.elapsedMs = 0;
+    state.sentenceIndex = 0;
+    stopPlayheadTracker();
+    setPlayIcon(false);
+    $('#btnPlay').classList.add('primary');
+    highlightSentence(0);
+    updateProgress();
+  }
+});
+
+// Encode mono Float32 PCM as a 16-bit WAV Blob for the <audio> element.
+function pcmToWavBlob(float32, sampleRate) {
+  const n = float32.length;
+  const buffer = new ArrayBuffer(44 + n * 2);
+  const view = new DataView(buffer);
+  const writeStr = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + n * 2, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);            // PCM
+  view.setUint16(22, 1, true);            // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, 'data');
+  view.setUint32(40, n * 2, true);
+  let off = 44;
+  for (let i = 0; i < n; i++) {
+    let s = Math.max(-1, Math.min(1, float32[i]));
+    s = s < 0 ? s * 0x8000 : s * 0x7fff;
+    view.setInt16(off, s, true);
+    off += 2;
+  }
+  return new Blob([buffer], { type: 'audio/wav' });
 }
 
-// Resume the AudioContext before playback. Must be called from a user-gesture
-// context (click handler) or it will stay suspended indefinitely.
-async function resumeAudioCtx() {
-  ensureAudioCtx();
-
-  // Try the normal resume path first (handles 'suspended')
-  const ctx = state.audioCtx;
-  if (ctx.state === 'suspended' || ctx.state === 'interrupted') {
-    try {
-      await ctx.resume();
-    } catch (_) {
-      // Some browsers throw when trying to resume an interrupted context.
-      // Fall through to the recreation path below.
-    }
+// Store PCM for one speed preset and build a fresh blob URL for playback.
+function setPlayerPCM(preset, float32, sampleRate) {
+  state.audioPCM[preset] = { data: float32, sampleRate, length: float32.length };
+  if (_reversedTrackURLs[preset]) {
+    try { URL.revokeObjectURL(_reversedTrackURLs[preset]); } catch (_) { /* ignore */ }
+    delete _reversedTrackURLs[preset];
   }
-
-  // If the context is still not running (macOS audio-session interruption,
-  // or a browser that refuses to resume without a fresh context), close the
-  // dead instance and rebuild a brand-new one, migrating the PCM buffers so
-  // no re-synthesis is required.
-  if (state.audioCtx.state !== 'running') {
-    await recreateAudioContext();
-  }
-
-  if (state.audioCtx.state !== 'running') {
-    throw new Error(`AudioContext unrecoverable. State: ${state.audioCtx.state}`);
-  }
+  if (state.audioURLs[preset]) { try { URL.revokeObjectURL(state.audioURLs[preset]); } catch (_) { /* ignore */ } }
+  state.audioURLs[preset] = URL.createObjectURL(pcmToWavBlob(float32, sampleRate));
 }
 
-// Close a stuck/interrupted AudioContext and open a fresh one, copying all
-// PCM data into new AudioBuffers so playback can resume without re-synthesis.
-async function recreateAudioContext() {
-  console.warn('[AudioCtx] Recreating interrupted/stuck context. State:', state.audioCtx?.state);
+const _reversedTrackURLs = {};
 
-  // Extract PCM from existing buffers while the old context is still alive
-  const savedPcm = {};
-  for (const [preset, buf] of Object.entries(state.audioBuffers)) {
-    if (buf && buf.length > 0) {
-      savedPcm[preset] = { pcm: buf.getChannelData(0).slice(), sampleRate: buf.sampleRate };
-    }
+// Point the <audio> element at the given preset's blob URL (no-op if unchanged).
+function ensurePlayerSrc(preset) {
+  const url = state.audioURLs[preset];
+  if (!url) return false;
+  if (_player.dataset.preset !== preset) {
+    _player.src = url;
+    _player.dataset.preset = preset;
   }
+  return true;
+}
 
-  // Close the dead context (fire-and-forget — don't let a stall block play)
-  const old = state.audioCtx;
-  state.audioCtx = null;
-  old?.close().catch(() => {});
+function getReversedTrackUrl(preset) {
+  const cached = _reversedTrackURLs[preset];
+  if (cached) return cached;
 
-  // A new AudioContext created from within a user-gesture call chain starts
-  // in 'running' state on all major browsers, bypassing the interruption.
-  state.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const pcm = state.audioPCM[preset];
+  if (!pcm?.data || !(pcm.sampleRate > 0)) return null;
 
-  // Some browsers still start the fresh context in 'suspended' — try
-  // resuming immediately while we are still in the gesture call chain.
-  if (state.audioCtx.state === 'suspended') {
-    await state.audioCtx.resume().catch(() => {});
+  const reversed = new Float32Array(pcm.data.length);
+  for (let i = 0, j = pcm.data.length - 1; i < pcm.data.length; i++, j--) reversed[i] = pcm.data[j];
+
+  const url = URL.createObjectURL(pcmToWavBlob(reversed, pcm.sampleRate));
+  _reversedTrackURLs[preset] = url;
+  return url;
+}
+
+function ensureReversedPlayerSrc(preset) {
+  const url = getReversedTrackUrl(preset);
+  if (!url) return false;
+  const rewPreset = `__rew__:${preset}`;
+  if (_player.dataset.preset !== rewPreset) {
+    _player.src = url;
+    _player.dataset.preset = rewPreset;
   }
+  return true;
+}
 
-  // Rebuild AudioBuffers in the new context from the saved PCM data
-  state.audioBuffers = {};
-  for (const [preset, { pcm, sampleRate }] of Object.entries(savedPcm)) {
-    const buf = state.audioCtx.createBuffer(1, pcm.length, sampleRate);
-    buf.copyToChannel(pcm, 0);
-    state.audioBuffers[preset] = buf;
+// Revoke and clear all audio assets (called when switching exercise/voice).
+function resetAudioAssets() {
+  for (const k of Object.keys(state.audioURLs)) { try { URL.revokeObjectURL(state.audioURLs[k]); } catch (_) { /* ignore */ } }
+  state.audioURLs = {};
+  for (const k of Object.keys(_reversedTrackURLs)) {
+    try { URL.revokeObjectURL(_reversedTrackURLs[k]); } catch (_) { /* ignore */ }
+    delete _reversedTrackURLs[k];
   }
+  state.audioPCM = {};
+  try { _player.pause(); } catch (_) { /* ignore */ }
+  _player.removeAttribute('src');
+  delete _player.dataset.preset;
+  try { _player.load(); } catch (_) { /* ignore */ }
+  state.srcNode = null;
+}
 
-  console.log('[AudioCtx] Recreated. State:', state.audioCtx.state,
-    '| Presets:', Object.keys(state.audioBuffers).join(', ') || 'none');
+// One-time silent WAV used to "bless" _player within the first user gesture
+// when audio isn't loaded yet, so that deferred play() calls (after async
+// synthesis/cache load) succeed without a gesture. Only fires when _player
+// has no real src; if real audio is already loaded, doPlay() itself calls
+// play() synchronously inside the gesture — no pre-unlock needed.
+const _silentUrl = URL.createObjectURL(pcmToWavBlob(new Float32Array(2205), 22050));
+let _playerUnlocked = false;
+function unlockPlayerSync() {
+  if (_playerUnlocked) return;
+  // If real audio is already loaded, doPlay will call play() synchronously
+  // within the gesture — mark unlocked and let doPlay do its job.
+  if (_player.src && _player.dataset.preset !== '__unlock__') {
+    _playerUnlocked = true;
+    return;
+  }
+  // Audio not ready yet — play the silent blob now to bless _player for
+  // the deferred play() that will happen once loading completes.
+  try {
+    _player.src = _silentUrl;
+    _player.dataset.preset = '__unlock__';
+    const p = _player.play();
+    const done = () => { _playerUnlocked = true; };
+    if (p && p.then) p.then(done).catch(done);
+    else done();
+  } catch (_) { _playerUnlocked = true; }
 }
 
 // ─── Exercise Loading (Piper WASM synthesis) ────────────────────────
 
 async function synthesizeAllSpeeds() {
-  console.log('[synthesizeAllSpeeds] Starting synthesis for', state.sentences.length, 'sentences x 3 speeds');
+  debugLog('[synthesizeAllSpeeds] Starting synthesis for', state.sentences.length, 'sentences x 3 speeds');
   const presets = ['slow', 'normal', 'fast'];
   const totalSteps = presets.length * state.sentences.length;
   let completedSteps = 0;
   for (const preset of presets) {
     const spd = SPEED_PRESETS[preset];
-    console.log(`[synthesizeAllSpeeds] === ${preset} (speed=${spd.speed}) ===`);
+    debugLog(`[synthesizeAllSpeeds] === ${preset} (speed=${spd.speed}) ===`);
     state.loadingMessage = 'Preparing audio…';
     state.loadingProgress = completedSteps / totalSteps;
     showLoadingOverlay();
@@ -1258,7 +1551,7 @@ async function synthesizeAllSpeeds() {
 async function synthesizeAtSpeed(preset, onProgress) {
   const spd = SPEED_PRESETS[preset];
   if (!spd || !state.provider || !state.providerReady) {
-    console.log(`synth abort: spd=${!!spd} provider=${!!state.provider} ready=${state.providerReady}`);
+    debugLog(`synth abort: spd=${!!spd} provider=${!!state.provider} ready=${state.providerReady}`);
     return;
   }
 
@@ -1270,7 +1563,7 @@ async function synthesizeAtSpeed(preset, onProgress) {
   let completed = 0;
   const total = sentences.length;
   const concurrency = Math.min(total || 1, getSynthesisConcurrency());
-  console.log(`[synthesize] ${preset}: synthesizing ${total} sentences with concurrency=${concurrency}`);
+  debugLog(`[synthesize] ${preset}: synthesizing ${total} sentences with concurrency=${concurrency}`);
 
   const results = new Array(total).fill(null);
   let nextIndex = 0;
@@ -1285,7 +1578,7 @@ async function synthesizeAtSpeed(preset, onProgress) {
     });
     try {
       const res = await Promise.race([synthPromise, timeoutPromise]);
-      console.log(`[synthesize] ${preset} sentence ${i + 1}/${total} OK in ${((performance.now() - startTime) / 1000).toFixed(1)}s`);
+      debugLog(`[synthesize] ${preset} sentence ${i + 1}/${total} OK in ${((performance.now() - startTime) / 1000).toFixed(1)}s`);
       return res;
     } catch (err) {
       console.error(`[synthesize] ${preset} sentence ${i + 1}/${total} FAILED:`, err.message);
@@ -1310,64 +1603,67 @@ async function synthesizeAtSpeed(preset, onProgress) {
   // Build concatenated PCM buffer and metadata
   const validResults = results.filter(r => r && r.audioData && r.audioData.length > 0);
   if (validResults.length === 0) {
-    console.log(`synth ${preset}: 0/${results.length} valid results`);
+    debugLog(`synth ${preset}: 0/${results.length} valid results`);
     return;
   }
 
   const sampleRate = validResults[0].sampleRate;
+  const guardSamples = Math.max(1, Math.round(sampleRate * 0.1)); // 100 ms
 
   // Compute total length and build per-sentence metadata
   let totalSamples = 0;
   const metaSentences = [];
+  const segmentSpecs = [];
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
     const wordCount = sentences[i].split(/\s+/).filter(w => w).length;
-    if (r && r.audioData && r.audioData.length > 0) {
-      const startSample = totalSamples;
-      const durMs = r.durationMs || (r.audioData.length / r.sampleRate) * 1000;
-      const sampleLen = r.audioData.length;
-      totalSamples += sampleLen;
+    const startSample = totalSamples;
+    const speechStartSample = startSample + guardSamples;
+    const hasAudio = !!(r && r.audioData && r.audioData.length > 0);
+    const sampleLen = hasAudio
+      ? r.audioData.length
+      : Math.max(1, Math.round((estimateDuration(sentences[i]) / 1000) * sampleRate));
+    const speechSpanMs = (sampleLen / sampleRate) * 1000;
+    totalSamples = speechStartSample + sampleLen;
 
-      // Compute per-word timing from phoneme data
-      const words = buildWordTimings(sentences[i], r.metadata, startSample, sampleRate, durMs);
+    // Compute per-word timing on the actual SPEECH timeline. The sentence's
+    // segment starts at `startSample` (guard silence), while words begin at
+    // `speechStartSample`. This creates a safe zone for prev/next seeks so
+    // Safari can land slightly early/late without clipping adjacent words.
+    const words = hasAudio
+      ? buildWordTimings(sentences[i], r.metadata, speechStartSample, sampleRate, speechSpanMs)
+      : buildFallbackWordTimings(sentences[i], (speechStartSample / sampleRate) * 1000, speechSpanMs);
 
-      metaSentences.push({
-        startMs: (startSample / sampleRate) * 1000,
-        endMs: (totalSamples / sampleRate) * 1000,
-        startSample,
-        endSample: totalSamples,
-        wordCount,
-        words,
-        durationMs: durMs,
-      });
-    } else {
-      // Fallback: estimate duration for failed synthesis
-      const estDur = estimateDuration(sentences[i]);
-      metaSentences.push({
-        startMs: (totalSamples / sampleRate) * 1000,
-        endMs: ((totalSamples / sampleRate) * 1000) + estDur,
-        startSample: totalSamples,
-        endSample: totalSamples,
-        wordCount,
-        words: buildFallbackWordTimings(sentences[i], (totalSamples / sampleRate) * 1000, estDur),
-        durationMs: estDur,
-      });
+    metaSentences.push({
+      startMs: (startSample / sampleRate) * 1000,
+      endMs: (totalSamples / sampleRate) * 1000,
+      startSample,
+      endSample: totalSamples,
+      wordCount,
+      words,
+      durationMs: ((totalSamples - startSample) / sampleRate) * 1000,
+      speechStartMs: (speechStartSample / sampleRate) * 1000,
+    });
+
+    segmentSpecs.push({
+      startSample: speechStartSample,
+      audioData: hasAudio ? r.audioData : null,
+    });
+  }
+
+  // Concatenate all Float32Arrays. The output buffer is zero-filled by default,
+  // so each sentence automatically gets its leading guard silence. Failed
+  // syntheses become silence of the estimated duration instead of collapsing
+  // later sentence boundaries.
+  const concat = new Float32Array(totalSamples);
+  for (const seg of segmentSpecs) {
+    if (seg.audioData) {
+      concat.set(seg.audioData, seg.startSample);
     }
   }
 
-  // Concatenate all Float32Arrays
-  const concat = new Float32Array(totalSamples);
-  let offset = 0;
-  for (const r of validResults) {
-    concat.set(r.audioData, offset);
-    offset += r.audioData.length;
-  }
-
-  // Create AudioBuffer
-  ensureAudioCtx();
-  const buf = state.audioCtx.createBuffer(1, concat.length, sampleRate);
-  buf.copyToChannel(concat, 0);
-  state.audioBuffers[preset] = buf;
+  // Store PCM + build a WAV blob URL for the <audio> element.
+  setPlayerPCM(preset, concat, sampleRate);
 
   const totalDurationMs = totalSamples > 0 ? (totalSamples / sampleRate) * 1000 : 0;
   state.ttsMetaBySpeed[preset] = { sentences: metaSentences, durationMs: totalDurationMs, sampleRate };
@@ -1375,49 +1671,64 @@ async function synthesizeAtSpeed(preset, onProgress) {
 
 // ─── Phoneme-to-Word Timings ────────────────────────────────────────
 
+// Build per-word timings that TILE the sentence exactly on its sample-based
+// timeline. Word weights come from summed phoneme durations when available
+// (more natural pacing) and fall back to character length. The weights are then
+// normalized to span exactly [sentenceStartMs, sentenceStartMs+sentenceDurationMs],
+// which is the same timeline the progress-bar thumb and <audio> playhead use.
+// This is what keeps the text highlight and the progress bar locked together.
 function buildWordTimings(sentenceText, metadata, sentenceStartSample, sampleRate, sentenceDurationMs = 0) {
   const words = sentenceText.split(/\s+/).filter(w => w);
-  if (!metadata || !metadata.phonemes || !metadata.durations || words.length === 0) {
-    // Pass real sentence duration so fallback word timings are proportional, not zero-width
-    return buildFallbackWordTimings(sentenceText, (sentenceStartSample / sampleRate) * 1000, sentenceDurationMs);
-  }
-
-  const phonemes = metadata.phonemes;       // string[]
-  const durations = metadata.durations;      // Float32Array (seconds)
-
-  // Map phonemes to words by character-length proportion
-  const totalChars = words.reduce((s, w) => s + w.length, 0);
-  const totalPhonemes = phonemes.length;
-  if (totalPhonemes === 0 || totalChars === 0) {
-    return buildFallbackWordTimings(sentenceText, (sentenceStartSample / sampleRate) * 1000, 0);
-  }
-
-  // Assign phonemes to each word proportionally by character count
-  let phonemeIdx = 0;
-  const wordTimings = [];
   const sentenceStartMs = (sentenceStartSample / sampleRate) * 1000;
-
-  for (let wi = 0; wi < words.length; wi++) {
-    const charFrac = words[wi].length / totalChars;
-    const numPhonemesForWord = Math.max(1, Math.round(charFrac * totalPhonemes));
-    const endPhonemeIdx = Math.min(totalPhonemes, phonemeIdx + numPhonemesForWord);
-
-    // Sum durations for this word's phonemes
-    let wordDurSec = 0;
-    for (let pi = phonemeIdx; pi < endPhonemeIdx; pi++) {
-      wordDurSec += durations[pi];
-    }
-
-    const wordStartMs = sentenceStartMs + (phonemeIdx > 0
-      ? durations.slice(0, phonemeIdx).reduce((a, b) => a + b, 0) * 1000
-      : 0);
-    const wordEndMs = wordStartMs + wordDurSec * 1000;
-
-    wordTimings.push({ startMs: wordStartMs, endMs: wordEndMs });
-    phonemeIdx = endPhonemeIdx;
+  if (words.length === 0) return [];
+  if (!(sentenceDurationMs > 0)) {
+    return buildFallbackWordTimings(sentenceText, sentenceStartMs, sentenceDurationMs);
   }
 
-  return wordTimings;
+  // Per-word weight.
+  let weights;
+  if (metadata && metadata.phonemes && metadata.durations && metadata.phonemes.length > 0) {
+    const phonemes = metadata.phonemes;      // string[]
+    const durations = metadata.durations;     // Float32Array (seconds)
+    const totalPhonemes = phonemes.length;
+    const totalChars = words.reduce((s, w) => s + w.length, 0) || words.length;
+    weights = new Array(words.length).fill(0);
+    let phonemeIdx = 0;
+    for (let wi = 0; wi < words.length; wi++) {
+      // Give the last word every remaining phoneme so nothing is dropped.
+      let endPhonemeIdx;
+      if (wi === words.length - 1) {
+        endPhonemeIdx = totalPhonemes;
+      } else {
+        const charFrac = words[wi].length / totalChars;
+        const count = Math.max(1, Math.round(charFrac * totalPhonemes));
+        endPhonemeIdx = Math.min(totalPhonemes, phonemeIdx + count);
+      }
+      let d = 0;
+      for (let pi = phonemeIdx; pi < endPhonemeIdx; pi++) d += durations[pi];
+      weights[wi] = d;
+      phonemeIdx = endPhonemeIdx;
+    }
+  } else {
+    weights = words.map(w => w.length || 1);
+  }
+
+  let totalWeight = weights.reduce((a, b) => a + b, 0);
+  if (!(totalWeight > 0)) { weights = weights.map(() => 1); totalWeight = weights.length; }
+
+  // Normalize weights to tile the sentence span exactly and contiguously.
+  const timings = [];
+  let cum = 0;
+  for (let wi = 0; wi < words.length; wi++) {
+    const startMs = sentenceStartMs + (cum / totalWeight) * sentenceDurationMs;
+    cum += weights[wi];
+    const endMs = sentenceStartMs + (cum / totalWeight) * sentenceDurationMs;
+    timings.push({ startMs, endMs });
+  }
+  // Snap the seams to kill floating-point drift.
+  timings[0].startMs = sentenceStartMs;
+  timings[timings.length - 1].endMs = sentenceStartMs + sentenceDurationMs;
+  return timings;
 }
 
 function buildFallbackWordTimings(sentenceText, sentenceStartMs, sentenceDurationMs) {
@@ -1440,6 +1751,8 @@ function buildFallbackWordTimings(sentenceText, sentenceStartMs, sentenceDuratio
 
 const CACHE_DB_NAME = 'word-by-word-cache';
 const CACHE_STORE = 'synthesized-audio';
+// Bump when the word-timing/meta format changes so stale entries are discarded.
+const CACHE_META_VERSION = 3;
 const CACHE_MAX_ENTRIES = Math.max(100, EXERCISES.length * Object.keys(VOICE_MODELS).length * 2);
 
 function openAudioCache() {
@@ -1467,12 +1780,12 @@ function getLegacyCacheKey(index = state.currentIndex, voiceType = state.voiceTy
 
 async function loadAudioFromCache() {
   try {
-    console.log('[cache] Opening IndexedDB...');
+    debugLog('[cache] Opening IndexedDB...');
     const db = await openAudioCache();
     const primaryKey = getCacheKey();
     const legacyKey = getLegacyCacheKey();
     const keys = legacyKey === primaryKey ? [primaryKey] : [primaryKey, legacyKey];
-    console.log('[cache] DB opened, reading keys:', keys);
+    debugLog('[cache] DB opened, reading keys:', keys);
     const cached = await new Promise((resolve, reject) => {
       const tx = db.transaction(CACHE_STORE, 'readonly');
       const store = tx.objectStore(CACHE_STORE);
@@ -1492,35 +1805,37 @@ async function loadAudioFromCache() {
       readNext();
     });
     db.close();
-    console.log('[cache] Read complete, found:', !!cached);
-    if (!cached) { console.log('[cache] No entry found for keys:', keys); return false; }
+    debugLog('[cache] Read complete, found:', !!cached);
+    if (!cached) { debugLog('[cache] No entry found for keys:', keys); return false; }
+    // Discard entries written by an older meta/word-timing format.
+    if (cached.metaVersion !== CACHE_META_VERSION) {
+      debugLog('[cache] Meta version mismatch — cached:', cached.metaVersion, 'current:', CACHE_META_VERSION, '— ignoring');
+      return false;
+    }
     // Verify sentences match — content could have changed
     if (!cached.sentences || cached.sentences.length !== state.sentences.length) {
-      console.log('[cache] Sentence count mismatch — cached:', cached.sentences?.length, 'current:', state.sentences.length);
+      debugLog('[cache] Sentence count mismatch — cached:', cached.sentences?.length, 'current:', state.sentences.length);
       return false;
     }
     for (let i = 0; i < state.sentences.length; i++) {
       if (cached.sentences[i] !== state.sentences[i]) {
-        console.log('[cache] Sentence', i, 'differs — stale cache');
+        debugLog('[cache] Sentence', i, 'differs — stale cache');
         return false;
       }
     }
-    // Restore audio buffers and metadata from cache
-    await ensureAudioCtx();
+    // Restore PCM + rebuild blob URLs and metadata from cache
     let buffersRestored = 0;
     for (const preset of ['slow', 'normal', 'fast']) {
       const bufData = cached.buffers[preset];
       const meta = cached.meta[preset];
       if (bufData && meta) {
-        const buf = state.audioCtx.createBuffer(1, bufData.byteLength / 4, meta.sampleRate);
-        buf.copyToChannel(new Float32Array(bufData), 0);
-        state.audioBuffers[preset] = buf;
+        setPlayerPCM(preset, new Float32Array(bufData), meta.sampleRate);
         state.ttsMetaBySpeed[preset] = meta;
         buffersRestored++;
       }
     }
     if (buffersRestored === 0) {
-      console.warn('[cache] Entry found with matching sentences but no audio buffers — ignoring');
+      console.warn('[cache] Entry found with matching sentences but no audio — ignoring');
       return false;
     }
     state.ttsMeta = state.ttsMetaBySpeed[state.speedPreset];
@@ -1539,20 +1854,21 @@ async function saveAudioToCache() {
       id: getCacheKey(),
       sentences: [...state.sentences],
       voiceType: state.voiceType,
+      metaVersion: CACHE_META_VERSION,
       buffers: {},
       meta: {},
       cachedAt: Date.now(),
     };
     for (const preset of ['slow', 'normal', 'fast']) {
-      const buf = state.audioBuffers[preset];
-      if (buf) {
-        entry.buffers[preset] = buf.getChannelData(0).buffer.slice(0);
+      const pcm = state.audioPCM[preset];
+      if (pcm && pcm.data) {
+        entry.buffers[preset] = pcm.data.buffer.slice(0);
         entry.meta[preset] = state.ttsMetaBySpeed[preset];
       }
     }
     if (Object.keys(entry.buffers).length === 0) {
       db.close();
-      console.warn('[cache] save skipped: no audio buffers for:', getCacheKey());
+      console.warn('[cache] save skipped: no audio for:', getCacheKey());
       return;
     }
 
@@ -1575,7 +1891,7 @@ async function saveAudioToCache() {
       tx.onerror = () => reject(tx.error);
     });
     db.close();
-    console.log('[cache] Saved audio for:', getCacheKey());
+    debugLog('[cache] Saved audio for:', getCacheKey());
   } catch (err) {
     console.warn('[cache] save failed:', err);
   }
@@ -1585,7 +1901,7 @@ let _loadAudioSeq = 0; // generation counter to cancel stale concurrent loads
 
 async function loadExerciseAudio(ex) {
   const seq = ++_loadAudioSeq;
-  console.log(`[loadExerciseAudio #${seq}] start — checking cache`);
+  debugLog(`[loadExerciseAudio #${seq}] start — checking cache`);
   const sentences = splitSentences(ex.text);
   state.sentences = sentences;
 
@@ -1605,23 +1921,25 @@ async function loadExerciseAudio(ex) {
 
   // If another loadExerciseAudio call started after us, abort — it has fresher data
   if (_loadAudioSeq !== seq) {
-    console.log(`[loadExerciseAudio #${seq}] Aborted — superseded by #${_loadAudioSeq}`);
+    debugLog(`[loadExerciseAudio #${seq}] Aborted — superseded by #${_loadAudioSeq}`);
     return;
   }
 
   if (cacheHit) {
-    console.log(`[loadExerciseAudio #${seq}] Cache hit — audio ready`);
+    debugLog(`[loadExerciseAudio #${seq}] Cache hit — audio ready`);
     // If provider isn't initialized yet, start it in the background so it's
     // available when the user switches to an uncached exercise.
     if (!state.provider || !state.providerReady) {
-      console.log(`[loadExerciseAudio #${seq}] Provider not ready — background init`);
+      debugLog(`[loadExerciseAudio #${seq}] Provider not ready — background init`);
       initProviderWithCorruptModelRetry().catch(err => console.warn('[loadExerciseAudio] Background provider init failed:', err.message));
     }
     hideLoadingOverlay();
+    // Preload the <audio> element so the first Play tap starts instantly.
+    ensurePlayerSrc(state.speedPreset);
     // Segment positions were rendered with estimates; re-render with real meta.
     renderProgressSegments();
     updateProgress();
-    if (state._playRequested && state.audioBuffers[state.speedPreset]) {
+    if (state._playRequested && state.audioURLs[state.speedPreset]) {
       state._playRequested = false;
       play();
     }
@@ -1641,12 +1959,12 @@ async function loadExerciseAudio(ex) {
       await initProviderWithCorruptModelRetry();
       // Check again — initProvider may have taken long enough for another call to start
       if (_loadAudioSeq !== seq) {
-        console.log(`[loadExerciseAudio #${seq}] Aborted after initProvider — superseded by #${_loadAudioSeq}`);
+        debugLog(`[loadExerciseAudio #${seq}] Aborted after initProvider — superseded by #${_loadAudioSeq}`);
         return;
       }
     }
 
-    console.log(`[loadExerciseAudio #${seq}] Cache miss — synthesizing`, sentences.length, 'sentences');
+    debugLog(`[loadExerciseAudio #${seq}] Cache miss — synthesizing`, sentences.length, 'sentences');
     try {
       await synthesizeAllSpeeds();
     } catch (err) {
@@ -1659,10 +1977,10 @@ async function loadExerciseAudio(ex) {
       await synthesizeAllSpeeds();
     }
     if (_loadAudioSeq !== seq) {
-      console.log(`[loadExerciseAudio #${seq}] Aborted after synthesis — superseded by #${_loadAudioSeq}`);
+      debugLog(`[loadExerciseAudio #${seq}] Aborted after synthesis — superseded by #${_loadAudioSeq}`);
       return;
     }
-    console.log(`[loadExerciseAudio #${seq}] Synthesis complete`);
+    debugLog(`[loadExerciseAudio #${seq}] Synthesis complete`);
     updateProgress();
     await saveAudioToCache();
   } catch (err) {
@@ -1675,7 +1993,8 @@ async function loadExerciseAudio(ex) {
     updateLoadingOverlay();
   } finally {
     if (_loadAudioSeq !== seq) return;
-    const hasAudio = state.audioBuffers[state.speedPreset];
+    ensurePlayerSrc(state.speedPreset);
+    const hasAudio = state.audioURLs[state.speedPreset];
     if (hasAudio) {
       hideLoadingOverlay();
     } else if (state._initError) {
@@ -1683,7 +2002,7 @@ async function loadExerciseAudio(ex) {
     } else {
       hideLoadingOverlay();
     }
-    console.log(`audioLoadDone hasAudio=${!!hasAudio} playRequested=${state._playRequested} err=${state._initError || 'none'}`);
+    debugLog(`audioLoadDone hasAudio=${!!hasAudio} playRequested=${state._playRequested} err=${state._initError || 'none'}`);
     if (state._playRequested && hasAudio) {
       state._playRequested = false;
       play();
@@ -1696,11 +2015,17 @@ async function loadExerciseAudio(ex) {
 function getSentenceAtTime(ms) {
   // Use meta boundaries if available, otherwise estimate
   if (state.ttsMeta && state.ttsMeta.sentences) {
-    for (let i = 0; i < state.ttsMeta.sentences.length; i++) {
-      const s = state.ttsMeta.sentences[i];
-      if (ms >= s.startMs && ms < s.endMs) return i;
+    const arr = state.ttsMeta.sentences;
+    for (let i = 0; i < arr.length; i++) {
+      if (ms >= arr[i].startMs && ms < arr[i].endMs) return i;
     }
-    return state.ttsMeta.sentences.length - 1;
+    // No exact containment (float gaps / imperfect timings): pick the nearest
+    // sentence by start time instead of blindly returning the last one.
+    if (ms <= arr[0].startMs) return 0;
+    for (let i = arr.length - 1; i >= 0; i--) {
+      if (ms >= arr[i].startMs) return i;
+    }
+    return arr.length - 1;
   }
   // Fallback: estimate
   let cumMs = 0;
@@ -1712,92 +2037,140 @@ function getSentenceAtTime(ms) {
 }
 
 function getSentenceMsBoundary(idx) {
-  // Return {startMs, endMs} for the given sentence index
+  // Return {startMs, endMs, words} for the given sentence index
   if (state.ttsMeta && state.ttsMeta.sentences && state.ttsMeta.sentences[idx]) {
     return state.ttsMeta.sentences[idx];
   }
-  // Fallback
+  // Fallback (pre-audio): estimate, but still supply tiling word timings so the
+  // highlight and progress bar use the same code path as when audio is ready.
+  const sent = state.sentences[idx] || '';
   let startMs = 0;
   for (let i = 0; i < idx; i++) startMs += estimateDuration(state.sentences[i]);
-  const endMs = startMs + estimateDuration(state.sentences[idx] || '');
-  return { startMs, endMs, wordCount: (state.sentences[idx] || '').split(' ').length };
+  const endMs = startMs + estimateDuration(sent);
+  return {
+    startMs,
+    endMs,
+    wordCount: sent.split(/\s+/).filter(Boolean).length,
+    words: buildFallbackWordTimings(sent, startMs, endMs - startMs),
+  };
 }
 
-// ─── Playback Engine (AudioBufferSourceNode) ─────────────────────
+function getLiveTransportPosition() {
+  const ms = currentAudioTime() * 1000;
+  const idx = getSentenceAtTime(ms);
+  return { ms, idx, bound: getSentenceMsBoundary(idx) };
+}
 
-async function doPlay(offsetSec) {
-  const gen = _playGen;
-  console.log('[doPlay] start, offsetSec:', offsetSec, 'speedPreset:', state.speedPreset, 'audioBuffers keys:', Object.keys(state.audioBuffers));
-  try {
-    await resumeAudioCtx();
-  } catch (err) {
-    console.error('[doPlay] Cannot resume AudioContext:', err.message);
+async function waitForPlayerMetadata(token) {
+  if (_player.readyState >= 1) return token === _playGen;
+  debugLog('[doPlay] readyState=0 — awaiting loadedmetadata');
+  await new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      _player.removeEventListener('loadedmetadata', onLoadedMetadata);
+      clearTimeout(timer);
+      resolve();
+    };
+    const onLoadedMetadata = () => finish();
+    const timer = setTimeout(finish, 2000);
+    _player.addEventListener('loadedmetadata', onLoadedMetadata);
+  });
+  if (token !== _playGen) return false;
+  debugLog('[doPlay] metadata ready, readyState now:', _player.readyState);
+  return true;
+}
+
+async function seekPlayerTo(targetSec, token) {
+  if (!(await waitForPlayerMetadata(token))) return false;
+
+  const duration = Number.isFinite(_player.duration) && _player.duration > 0
+    ? _player.duration
+    : targetSec;
+  const clamped = Math.max(0, Math.min(targetSec, Math.max(0, duration - 0.001)));
+  const delta = Math.abs((_player.currentTime || 0) - clamped);
+
+  if (delta <= 0.002 && !_player.seeking) {
+    return token === _playGen;
+  }
+
+  await new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      _player.removeEventListener('seeked', onSeeked);
+      clearTimeout(timer);
+      resolve();
+    };
+    const onSeeked = () => finish();
+    const timer = setTimeout(finish, 1200);
+    _player.addEventListener('seeked', onSeeked);
+    try {
+      _player.currentTime = clamped;
+    } catch (_) {
+      finish();
+    }
+  });
+
+  // Some Safari builds dispatch `seeked` late or not at all during rapid,
+  // consecutive seeks on the same element. Give the media element a brief
+  // extra settle window and only continue once `seeking` is actually false.
+  const settleDeadline = performance.now() + 300;
+  while (_player.seeking && performance.now() < settleDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 16));
+    if (token !== _playGen) return false;
+  }
+
+  return token === _playGen;
+}
+
+// ─── Playback Engine (HTMLAudioElement) ──────────────────────────
+
+async function doPlay(offsetSec, token) {
+  debugLog('[doPlay] start, offsetSec:', offsetSec, 'speedPreset:', state.speedPreset, 'urls:', Object.keys(state.audioURLs));
+  if (!ensurePlayerSrc(state.speedPreset)) {
+    console.error('[doPlay] No audio URL for speed:', state.speedPreset, 'available:', Object.keys(state.audioURLs));
     state.playing = false;
-    return;
+    return false;
   }
-  if (_playGen !== gen) {
-    console.log('[doPlay] cancelled — stop() was called during async gap');
-    return;
-  }
+
   stopSrcNode();
-
-  const buf = state.audioBuffers[state.speedPreset];
-  if (!buf) {
-    console.error('[doPlay] No audio buffer for speed:', state.speedPreset, 'available:', Object.keys(state.audioBuffers));
-    return;
+  if (!(await seekPlayerTo(Math.max(0, offsetSec), token))) {
+    debugLog('[doPlay] cancelled during seek');
+    return false;
   }
-  console.log('[doPlay] buffer: duration=', buf.duration.toFixed(1) + 's', 'sampleRate=', buf.sampleRate, 'length=', buf.length, 'channels=', buf.numberOfChannels);
-  // Diagnostic: check if the buffer has audible PCM data
-  const channelData = buf.getChannelData(0);
-  let peak = 0, nonZero = 0;
-  const checkLen = Math.min(10000, channelData.length);
-  for (let i = 0; i < checkLen; i++) {
-    const abs = Math.abs(channelData[i]);
-    if (abs > peak) peak = abs;
-    if (abs > 0.001) nonZero++;
-  }
-  console.log('[doPlay] buffer peak amplitude:', peak.toFixed(4), 'non-zero samples in first 10k:', nonZero, '/', checkLen);
 
-  const src = state.audioCtx.createBufferSource();
-  src.buffer = buf;
-  src.connect(state.audioCtx.destination);
-
-  state.srcNode = src;
+  _player.muted = false;
+  _player.playbackRate = 1;
+  state.srcNode = _player;
+  _playerToken = token;
   state.srcStartOffset = offsetSec;
   state.playing = true;
   state.paused = false;
-
-  src.onended = () => {
-    console.log('[doPlay] src.onended fired');
-    if (state.srcNode !== src) return; // was already stopped via stopSrcNode()
-    state.srcNode = null;
-
-    if (state.dictMode !== 'programmed') {
-      // Free mode: audio ran to the end naturally. Clean up so Play works again.
-      state.playing = false;
-      state.elapsedMs = 0;
-      state.sentenceIndex = 0;
-      stopPlayheadTracker();
-      setPlayIcon(false);
-      $('#btnPlay').classList.add('primary');
-      highlightSentence(0);
-      updateProgress();
-    }
-  };
-  // Record srcStartedAt with the SAME timestamp used for src.start() so that
-  // currentAudioTime() = audioCtx.currentTime - srcStartedAt + srcStartOffset
-  // stays exactly in sync with the audio engine clock.
-  const now = state.audioCtx.currentTime;
-  state.srcStartedAt = now;
-  src.start(now, offsetSec);
-  console.log('[doPlay] src.start() called at ctx time:', now, 'offset:', offsetSec, 'playing:', state.playing);
+  try {
+    await _player.play();
+  } catch (err) {
+    console.error('[doPlay] play() rejected:', err && err.message);
+    state.playing = false;
+    showAudioBlockedBanner();
+    return false;
+  }
+  if (_playGen !== token) {
+    if (_playerToken === token) stopSrcNode();
+    return false;
+  }
+  debugLog('[doPlay] playing from', offsetSec.toFixed(2) + 's', 'duration', (_player.duration || 0).toFixed(1) + 's');
+  hideAudioBlockedBanner();
   setPlayIcon(true);
   $('#btnPlay').classList.remove('primary');
   if (state.dictMode === 'programmed') lockTextarea(true);
+  return true;
 }
 
 async function play() {
-  console.log('[play] ENTERED. providerReady:', state.providerReady, 'playing:', state.playing, 'paused:', state.paused, 'dictMode:', state.dictMode, 'audioBuffers:', Object.keys(state.audioBuffers), 'sentences:', state.sentences.length);
+  debugLog('[play] ENTERED. providerReady:', state.providerReady, 'playing:', state.playing, 'paused:', state.paused, 'dictMode:', state.dictMode, 'urls:', Object.keys(state.audioURLs), 'sentences:', state.sentences.length);
   if (state.scrubbing) stopScrub();
 
   // If in a writing gap, skip it and start the next lap immediately
@@ -1809,11 +2182,11 @@ async function play() {
   }
 
   // Wait for audio to be ready
-  if (!state.audioBuffers[state.speedPreset]) {
-    console.warn('[play] Audio not ready yet');
+  if (!state.audioURLs[state.speedPreset]) {
+    debugLog('[play] Audio not ready yet');
     const overlay = document.querySelector('.loading-overlay');
     const loading = overlay && overlay.style.display === 'flex';
-    console.log(`play: no audio, loading=${loading}`);
+    debugLog(`play: no audio, loading=${loading}`);
     state._playRequested = true;
     if (!loading) {
       // Nothing is loading — start synthesis now
@@ -1825,18 +2198,20 @@ async function play() {
     }
     return;
   }
-  if (state.playing && !state.paused) { console.log('[play] already playing'); return; }
+  if (state.playing && !state.paused) { debugLog('[play] already playing'); return; }
 
   if (state.paused) {
     // Resume from pause
-    console.log('[play] resuming from pause');
-    await doPlay(currentAudioTime());
-    startPlayheadTracker();
+    debugLog('[play] resuming from pause');
+    const token = ++_playGen;
+    if (await doPlay(currentAudioTime(), token)) {
+      startPlayheadTracker();
+    }
     return;
   }
 
   // Fresh play
-  console.log('[play] fresh play, offsetMs:', state.elapsedMs);
+  debugLog('[play] fresh play, offsetMs:', state.elapsedMs);
   state.playing = true;
   state.paused = false;
 
@@ -1847,8 +2222,10 @@ async function play() {
   }
 
   const offsetSec = state.elapsedMs / 1000;
-  await doPlay(offsetSec);
-  startPlayheadTracker();
+  const token = ++_playGen;
+  if (await doPlay(offsetSec, token)) {
+    startPlayheadTracker();
+  }
 }
 
 let _rafId = null;
@@ -1889,14 +2266,16 @@ function startPlayheadTracker() {
 
     // Repeat mode — loop back to sentence start
     if (state.repeatMode) {
-      const curBound = getSentenceMsBoundary(state.sentenceIndex);
+      const repeatIdx = getRepeatTargetIndex();
+      const curBound = getSentenceMsBoundary(repeatIdx);
+      state.sentenceIndex = repeatIdx;
       if (state.elapsedMs >= curBound.endMs - 10) {
-        seekToTime(curBound.startMs, true);
+        restartCurrentSentenceForRepeat();
         return;
       }
     }
 
-    if (newIdx !== state.sentenceIndex) {
+    if (!state.repeatMode && newIdx !== state.sentenceIndex) {
       state.sentenceIndex = newIdx;
       highlightSentence(newIdx);
     }
@@ -2029,11 +2408,21 @@ function advanceFromLapGap(curBound) {
   }
 }
 
-// ─── Playback Control (AudioBuffer) ───────────────────────────────
+// ─── Playback Control (HTMLAudioElement) ──────────────────────────
 let _playGen = 0;
+let _scrubResumeTimer = null;
+
+function clearScrubResumeTimer() {
+  if (_scrubResumeTimer) {
+    clearTimeout(_scrubResumeTimer);
+    _scrubResumeTimer = null;
+  }
+}
 
 function pause() {
   if (!state.playing || state.paused) return;
+  clearScrubResumeTimer();
+  _playGen++;
   // Capture position BEFORE nulling srcNode — currentAudioTime() needs it
   state.elapsedMs = currentAudioTime() * 1000;
   stopSrcNode();
@@ -2045,6 +2434,7 @@ function pause() {
 }
 
 function stop() {
+  clearScrubResumeTimer();
   _playGen++;
   state._playRequested = false;
   cancelLapGap();
@@ -2074,18 +2464,47 @@ function lockTextarea(locked) {
   if (ta) ta.readOnly = locked;
 }
 
-async function seekToTime(ms, keepPlaying) {
+function renderProgressSnapped(render) {
+  document.body.classList.add('progress-snapping');
+  render();
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      document.body.classList.remove('progress-snapping');
+    });
+  });
+}
+
+function getSentenceJumpPlayMs(bound) {
+  return Math.max(bound.startMs, Math.min(bound.endMs - 1, bound.startMs + 24));
+}
+
+async function seekToTime(ms, keepPlaying, { snapProgress = false, playFromMs = ms } = {}) {
+  clearScrubResumeTimer();
   state.elapsedMs = Math.max(0, Math.min(state.totalDurationMs, ms));
   state.sentenceIndex = getSentenceAtTime(state.elapsedMs);
+  if (state.repeatMode && state.dictMode !== 'programmed') setRepeatTargetIndex(state.sentenceIndex);
+
+  const render = () => {
+    highlightSentence(state.sentenceIndex);
+    updateProgress();
+  };
+
+  if (snapProgress) renderProgressSnapped(render);
 
   if (keepPlaying) {
-    stopSrcNode();
-    const gen = _playGen;
-    const offsetSec = state.elapsedMs / 1000;
-    await doPlay(offsetSec);
-    if (_playGen !== gen) return; // stop() was called during async gap
-    startPlayheadTracker();
+    const token = ++_playGen;
+    stopPlayheadTracker();
+    const offsetSec = Math.max(0, Math.min(state.totalDurationMs, playFromMs)) / 1000;
+    if (await doPlay(offsetSec, token)) {
+      startPlayheadTracker();
+    } else if (token === _playGen && state.srcNode !== _player) {
+      state.playing = false;
+      state.paused = false;
+      setPlayIcon(false);
+      $('#btnPlay').classList.add('primary');
+    }
   } else {
+    _playGen++;
     stopSrcNode();
     stopPlayheadTracker();
     state.playing = false;
@@ -2094,21 +2513,33 @@ async function seekToTime(ms, keepPlaying) {
     $('#btnPlay').classList.add('primary');
   }
 
-  highlightSentence(state.sentenceIndex);
-  updateProgress();
+  if (snapProgress) renderProgressSnapped(render);
+  else render();
 }
 
-// ─── Scrubbing (cassette-style FFW / reversed REW) ────────────────
+// ─── Scrubbing (cassette-style FFW / REW) using HTMLAudioElement ─────────────
+// FFW: fast-forward by setting playbackRate to SCRUB_RATE on the live element.
+// REW: use one reversed full-track blob and mirrored timing, because portable
+// negative-rate media playback is not available on HTMLAudioElement.
 
-const SCRUB_RATE = 2.5;
+const SCRUB_RATE = 4;
 let _scrubTimer = null;
-let _ffwSrc = null;
-let _rewSrc = null;
-let _ffwStartedAt = 0;
-let _ffwStartOffset = 0;
+let _scrubFfwStart = 0;     // performance.now() when FFW started
+let _scrubFfwOffset = 0;    // element currentTime when FFW started
+let _scrubRewStart = 0;     // performance.now() when REW started
+let _scrubRewOffset = 0;    // original-track currentTime when REW started
+
+function updateScrubButtons() {
+  $('#btnRew').classList.toggle('primary', state.scrubbing && state.scrubDir < 0);
+  $('#btnFwd').classList.toggle('primary', state.scrubbing && state.scrubDir > 0);
+}
 
 function startScrub(direction) {
   if (state.sentences.length === 0) return;
+  state.elapsedMs = currentAudioTime() * 1000;
+  state.sentenceIndex = getSentenceAtTime(state.elapsedMs);
+  clearScrubResumeTimer();
+  _playGen++;
   state.wasPlayingBeforeScrub = state.playing && !state.paused;
   stopSrcNode();
   stopPlayheadTracker();
@@ -2119,36 +2550,25 @@ function startScrub(direction) {
 
   setPlayIcon(false);
   $('#btnPlay').classList.add('primary');
+  updateScrubButtons();
 
-  if (direction > 0) {
-    startFFW();
-  } else {
-    startREW();
-  }
+  if (direction > 0) startFFW(); else startREW();
 }
 
 function startFFW() {
-  const buf = state.audioBuffers[state.speedPreset];
-  if (!buf || !state.audioCtx) return;
+  if (state.wasPlayingBeforeScrub && ensurePlayerSrc(state.speedPreset)) {
+    try {
+      _player.currentTime = state.elapsedMs / 1000;
+      _player.playbackRate = SCRUB_RATE;
+      _player.play().catch(() => {});
+    } catch (_) { /* ignore */ }
+  }
+  _scrubFfwStart = performance.now();
+  _scrubFfwOffset = state.elapsedMs / 1000;
 
-  const offsetSec = state.elapsedMs / 1000;
-  _ffwSrc = state.audioCtx.createBufferSource();
-  _ffwSrc.buffer = buf;
-  _ffwSrc.playbackRate.value = SCRUB_RATE;
-  _ffwSrc.connect(state.audioCtx.destination);
-  _ffwSrc.start(0, offsetSec);
-  _ffwSrc.onended = () => { _ffwSrc = null; };
-  _ffwStartedAt = state.audioCtx.currentTime;
-  _ffwStartOffset = offsetSec;
-
-  // Update UI periodically during FFW
   _scrubTimer = setInterval(() => {
-    if (!state.scrubbing || state.scrubDir <= 0) {
-      clearInterval(_scrubTimer);
-      _scrubTimer = null;
-      return;
-    }
-    const effectiveSec = _ffwStartOffset + (state.audioCtx.currentTime - _ffwStartedAt) * SCRUB_RATE;
+    if (!state.scrubbing || state.scrubDir <= 0) { clearInterval(_scrubTimer); _scrubTimer = null; return; }
+    const effectiveSec = _scrubFfwOffset + (performance.now() - _scrubFfwStart) / 1000 * SCRUB_RATE;
     state.elapsedMs = Math.min(state.totalDurationMs, Math.max(0, effectiveSec * 1000));
     state.sentenceIndex = getSentenceAtTime(state.elapsedMs);
     highlightSentence(state.sentenceIndex);
@@ -2157,95 +2577,52 @@ function startFFW() {
 }
 
 function startREW() {
-  const stepMs = 100;
+  if (state.wasPlayingBeforeScrub && ensureReversedPlayerSrc(state.speedPreset)) {
+    const pcm = state.audioPCM[state.speedPreset];
+    const durationSec = (pcm.length || pcm.data.length) / pcm.sampleRate;
+    const startSec = Math.max(0, Math.min(Math.max(0, durationSec - 0.001), durationSec - (state.elapsedMs / 1000)));
+
+    try {
+      _player.currentTime = startSec;
+      _player.playbackRate = SCRUB_RATE;
+      _player.play().catch(() => {});
+    } catch (_) { /* ignore */ }
+  }
+
+  _scrubRewStart = performance.now();
+  _scrubRewOffset = state.elapsedMs / 1000;
+
   _scrubTimer = setInterval(() => {
-    if (!state.scrubbing || state.scrubDir >= 0) {
-      clearInterval(_scrubTimer);
-      _scrubTimer = null;
-      return;
-    }
-    state.elapsedMs = Math.max(0, state.elapsedMs - stepMs * SCRUB_RATE);
+    if (!state.scrubbing || state.scrubDir >= 0) { clearInterval(_scrubTimer); _scrubTimer = null; return; }
+    const effectiveSec = _scrubRewOffset - (performance.now() - _scrubRewStart) / 1000 * SCRUB_RATE;
+    state.elapsedMs = Math.max(0, effectiveSec * 1000);
+
     state.sentenceIndex = getSentenceAtTime(state.elapsedMs);
     highlightSentence(state.sentenceIndex);
     updateProgress();
-  }, stepMs);
-
-  playRewBurst();
-}
-
-function createReversedBuffer(fromSec, durationSec) {
-  const buf = state.audioBuffers[state.speedPreset];
-  if (!buf) return null;
-
-  const sampleRate = buf.sampleRate;
-  const startSample = Math.max(0, Math.floor(fromSec * sampleRate));
-  const lengthSamples = Math.min(Math.floor(durationSec * sampleRate), buf.length - startSample);
-  if (lengthSamples <= 0) return null;
-
-  const reversed = state.audioCtx.createBuffer(buf.numberOfChannels, lengthSamples, sampleRate);
-  for (let ch = 0; ch < buf.numberOfChannels; ch++) {
-    const srcData = buf.getChannelData(ch);
-    const dstData = reversed.getChannelData(ch);
-    for (let i = 0; i < lengthSamples; i++) {
-      dstData[i] = srcData[startSample + lengthSamples - 1 - i];
-    }
-  }
-  return reversed;
-}
-
-function playRewBurst() {
-  if (!state.scrubbing || state.scrubDir >= 0) return;
-
-  const buf = state.audioBuffers[state.speedPreset];
-  if (!buf || !state.audioCtx) return;
-
-  const currentSec = state.elapsedMs / 1000;
-  const segmentDur = 0.8; // seconds of original audio to reverse
-  const startSec = Math.max(0, currentSec - segmentDur);
-  const actualDur = currentSec - startSec;
-  if (actualDur <= 0.01) return;
-
-  const reversed = createReversedBuffer(startSec, actualDur);
-  if (!reversed) return;
-
-  _rewSrc = state.audioCtx.createBufferSource();
-  _rewSrc.buffer = reversed;
-  _rewSrc.playbackRate.value = SCRUB_RATE;
-  _rewSrc.connect(state.audioCtx.destination);
-  _rewSrc.start(0);
-  _rewSrc.onended = () => {
-    _rewSrc = null;
-    if (state.scrubbing && state.scrubDir < 0) {
-      playRewBurst(); // chain next burst while still rewinding
-    }
-  };
+  }, 80);
 }
 
 function stopScrub() {
   if (!state.scrubbing) return;
 
-  // Compute final position before clearing state
   let finalMs = state.elapsedMs;
-  if (_ffwSrc) {
-    try {
-      const effectiveSec = _ffwStartOffset + (state.audioCtx.currentTime - _ffwStartedAt) * SCRUB_RATE;
-      finalMs = Math.min(state.totalDurationMs, Math.max(0, effectiveSec * 1000));
-      _ffwSrc.stop();
-    } catch (_) { /* already stopped */ }
-    _ffwSrc = null;
+  if (state.scrubDir > 0) {
+    const effectiveSec = _scrubFfwOffset + (performance.now() - _scrubFfwStart) / 1000 * SCRUB_RATE;
+    finalMs = Math.min(state.totalDurationMs, Math.max(0, effectiveSec * 1000));
+  } else if (state.scrubDir < 0) {
+    const effectiveSec = _scrubRewOffset - (performance.now() - _scrubRewStart) / 1000 * SCRUB_RATE;
+    finalMs = Math.max(0, effectiveSec * 1000);
   }
-  if (_rewSrc) {
-    try { _rewSrc.stop(); } catch (_) { /* already stopped */ }
-    _rewSrc = null;
+  try { _player.pause(); _player.playbackRate = 1; } catch (_) { /* ignore */ }
+  if ((_player.dataset.preset || '').startsWith('__rew__:')) {
+    ensurePlayerSrc(state.speedPreset);
   }
 
   state.scrubbing = false;
   state.scrubDir = 0;
-
-  if (_scrubTimer) {
-    clearInterval(_scrubTimer);
-    _scrubTimer = null;
-  }
+  if (_scrubTimer) { clearInterval(_scrubTimer); _scrubTimer = null; }
+  updateScrubButtons();
 
   state.elapsedMs = finalMs;
   state.sentenceIndex = getSentenceAtTime(state.elapsedMs);
@@ -2256,8 +2633,11 @@ function stopScrub() {
 
   if (state.wasPlayingBeforeScrub) {
     const resumeMs = state.elapsedMs;
-    stopSrcNode();
-    setTimeout(() => seekToTime(resumeMs, true), 80);
+    clearScrubResumeTimer();
+    _scrubResumeTimer = setTimeout(() => {
+      _scrubResumeTimer = null;
+      seekToTime(resumeMs, true);
+    }, 80);
   }
   state.wasPlayingBeforeScrub = false;
 }
@@ -2351,7 +2731,7 @@ function escapeHtml(str) {
 
 // ─── Event Wiring ────────────────────────────────────────────────
 
-console.log('[init] Wiring events. btnPlay:', !!$('#btnPlay'));
+debugLog('[init] Wiring events. btnPlay:', !!$('#btnPlay'));
 
 // Clone btnPlay to strip any stale listeners from HMR hot-reloads
 {
@@ -2361,16 +2741,7 @@ console.log('[init] Wiring events. btnPlay:', !!$('#btnPlay'));
 }
 
 $('#btnPlay').addEventListener('click', () => {
-  // ── Gesture-synchronous AudioContext recovery ──────────────────────────────
-  // Safari requires AudioContext.resume() to be called SYNCHRONOUSLY from a
-  // user-event handler. Any await before the call loses the gesture token,
-  // making the call fail — even after a page reload in the same window.
-  // Calling it here (before any async hop) maximises compatibility.
-  if (state.audioCtx && state.audioCtx.state !== 'running') {
-    state.audioCtx.resume().catch(() => {});
-  }
-  // ──────────────────────────────────────────────────────────────────────────
-  console.log('[click] btnPlay fired. playing:', state.playing, 'paused:', state.paused, 'dictMode:', state.dictMode, 'inLapGap:', state.inLapGap);
+  debugLog('[click] btnPlay fired. playing:', state.playing, 'paused:', state.paused, 'dictMode:', state.dictMode, 'inLapGap:', state.inLapGap);
   if (state.dictMode === 'programmed') {
     if (state.playing || state.paused || state.inLapGap) {
       // Stop the test mid-way and rewind to first sentence
@@ -2399,25 +2770,35 @@ $('#btnPlay').addEventListener('click', () => {
 // Prev / Next sentence — single-click jump, preserves play/pause state
 $('#btnPrev').addEventListener('click', () => {
   const wasPlaying = state.playing && !state.paused;
-  const bound = getSentenceMsBoundary(state.sentenceIndex);
+  const { ms, idx, bound } = getLiveTransportPosition();
   // If in the middle of current sentence, go to its beginning first
-  if (state.elapsedMs > bound.startMs + 500) {
-    seekToTime(bound.startMs, wasPlaying);
+  if (ms > bound.startMs + 500) {
+    seekToTime(bound.startMs, wasPlaying, {
+      snapProgress: true,
+      playFromMs: getSentenceJumpPlayMs(bound),
+    });
   } else {
     // Already at beginning, go to previous sentence
-    const idx = Math.max(0, state.sentenceIndex - 1);
-    if (idx !== state.sentenceIndex) {
-      const prevBound = getSentenceMsBoundary(idx);
-      seekToTime(prevBound.startMs, wasPlaying);
+    const prevIdx = Math.max(0, idx - 1);
+    if (prevIdx !== idx) {
+      const prevBound = getSentenceMsBoundary(prevIdx);
+      seekToTime(prevBound.startMs, wasPlaying, {
+        snapProgress: true,
+        playFromMs: getSentenceJumpPlayMs(prevBound),
+      });
     }
   }
 });
 $('#btnNext').addEventListener('click', () => {
-  const idx = Math.min(state.sentences.length - 1, state.sentenceIndex + 1);
-  if (idx !== state.sentenceIndex) {
+  const { idx } = getLiveTransportPosition();
+  const nextIdx = Math.min(state.sentences.length - 1, idx + 1);
+  if (nextIdx !== idx) {
     const wasPlaying = state.playing && !state.paused;
-    const bound = getSentenceMsBoundary(idx);
-    seekToTime(bound.startMs, wasPlaying);
+    const bound = getSentenceMsBoundary(nextIdx);
+    seekToTime(bound.startMs, wasPlaying, {
+      snapProgress: true,
+      playFromMs: getSentenceJumpPlayMs(bound),
+    });
   }
 });
 
@@ -2462,6 +2843,8 @@ $('#speedSelect').addEventListener('change', () => {
 $('#btnRepeat').addEventListener('click', () => {
   if (state.dictMode === 'programmed') return;
   state.repeatMode = !state.repeatMode;
+  if (state.repeatMode) syncRepeatTargetToCurrentPosition();
+  else state.repeatSentenceIndex = null;
   updateABButtons();
   highlightSentence(state.sentenceIndex);
   updateProgress();
@@ -2479,23 +2862,84 @@ $('#btnToggleTranscript').addEventListener('click', () => {
 $('#btnCheck').addEventListener('click', scoreDictation);
 $('#btnClearInput').addEventListener('click', clearDictation);
 
-$('#btnToggleInput').addEventListener('click', () => {
-  state.inputVisible = !state.inputVisible;
+let _inputPanelAnimSeq = 0;
+
+function getInputPanelMetrics() {
+  const main = $('#main-area');
+  const top = $('#top-panel');
+  const bottom = $('#bottom-panel');
+  const bar = $('#controls-bar');
+  const barH = bar.getBoundingClientRect().height;
+  return {
+    main,
+    topH: top.getBoundingClientRect().height,
+    bottomH: bottom.getBoundingClientRect().height,
+    barH,
+    totalH: Math.max(0, main.getBoundingClientRect().height - barH),
+  };
+}
+
+function setMainSplitRows(topPx, barH, bottomPx) {
+  $('#main-area').style.gridTemplateRows = `${Math.max(0, topPx)}px ${barH}px ${Math.max(0, bottomPx)}px`;
+}
+
+function getVisibleInputSplit(metrics) {
+  const totalH = metrics.totalH;
+  const fallbackBottom = Math.round(totalH * 0.38);
+  const requestedBottom = _inputPanelPreferredBottomH > 0 ? _inputPanelPreferredBottomH : fallbackBottom;
+  const minBottom = Math.min(140, Math.max(96, totalH * 0.28));
+  const maxBottom = Math.max(minBottom, totalH - 96);
+  const bottomH = Math.max(minBottom, Math.min(maxBottom, requestedBottom));
+  return {
+    bottomH,
+    topH: Math.max(80, totalH - bottomH),
+  };
+}
+
+function setInputPanelVisible(visible, { instant = false } = {}) {
+  state.inputVisible = visible;
   const panel = $('#bottom-panel');
   const btn = $('#btnToggleInput');
-  const main = $('#main-area');
-  const barH = $('#controls-bar').getBoundingClientRect().height;
-  if (state.inputVisible) {
-    panel.classList.remove('hidden');
-    main.style.gridTemplateRows = `1fr ${barH}px 1fr`;
-    btn.textContent = 'Hide Input';
-    btn.classList.add('primary');
+  const seq = ++_inputPanelAnimSeq;
+  const metrics = getInputPanelMetrics();
+
+  btn.innerHTML = visible ? `${ICONS.edit} Hide Input` : `${ICONS.edit} Type Here`;
+  btn.classList.remove('primary');
+
+  if (visible) {
+    const target = getVisibleInputSplit(metrics);
+
+    if (instant) {
+      panel.classList.remove('hidden');
+      setMainSplitRows(target.topH, metrics.barH, target.bottomH);
+      return;
+    }
+
+    setMainSplitRows(metrics.topH, metrics.barH, metrics.bottomH);
+    requestAnimationFrame(() => {
+      if (seq !== _inputPanelAnimSeq || !state.inputVisible) return;
+      panel.classList.remove('hidden');
+      setMainSplitRows(target.topH, metrics.barH, target.bottomH);
+    });
   } else {
+    if (metrics.bottomH > 0) _inputPanelPreferredBottomH = metrics.bottomH;
+    setMainSplitRows(metrics.topH, metrics.barH, metrics.bottomH);
     panel.classList.add('hidden');
-    main.style.gridTemplateRows = `1fr ${barH}px 0px`;
-    btn.textContent = 'Type Here';
-    btn.classList.remove('primary');
+
+    if (instant) {
+      setMainSplitRows(metrics.totalH, metrics.barH, 0);
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      if (seq !== _inputPanelAnimSeq || state.inputVisible) return;
+      setMainSplitRows(metrics.totalH, metrics.barH, 0);
+    });
   }
+}
+
+$('#btnToggleInput').addEventListener('click', () => {
+  setInputPanelVisible(!state.inputVisible);
 });
 
 $('#voiceSelect').addEventListener('change', () => {
@@ -2534,7 +2978,9 @@ $('#programmedLaps').addEventListener('change', () => {
     const ms = (pct / 100) * state.totalDurationMs;
     state.elapsedMs = Math.max(0, Math.min(state.totalDurationMs, ms));
     state.sentenceIndex = getSentenceAtTime(state.elapsedMs);
-    highlightSentence(state.sentenceIndex);
+    // suppress scroll during drag — panel stays put so the thumb and word
+    // highlight are always visually in the same frame
+    highlightSentence(state.sentenceIndex, { scroll: false });
     updateProgress();
   }
 
@@ -2546,6 +2992,7 @@ $('#programmedLaps').addEventListener('change', () => {
     stopPlayheadTracker();
     state.playing = false;
     state.paused = false;
+    document.body.classList.add('dragging-seek');
     thumb.style.transition = 'none';
     applyPct(pctFromClientX(e.clientX));
     e.preventDefault();
@@ -2559,8 +3006,14 @@ $('#programmedLaps').addEventListener('change', () => {
   function endSeek(clientX) {
     if (!dragging) return;
     dragging = false;
+    document.body.classList.remove('dragging-seek');
     thumb.style.transition = 'left 0.15s linear';
     applyPct(pctFromClientX(clientX));
+    // scroll the panel to show the newly-seeked sentence
+    const sentEls = document.querySelectorAll('.sentence');
+    if (sentEls[state.sentenceIndex]) {
+      sentEls[state.sentenceIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
     if (wasPlaying) {
       setTimeout(() => play(), 80);
     }
@@ -2578,6 +3031,7 @@ $('#programmedLaps').addEventListener('change', () => {
     stopPlayheadTracker();
     state.playing = false;
     state.paused = false;
+    document.body.classList.add('dragging-seek');
     thumb.style.transition = 'none';
     applyPct(pctFromClientX(e.touches[0].clientX));
     e.preventDefault();
@@ -2591,8 +3045,13 @@ $('#programmedLaps').addEventListener('change', () => {
   document.addEventListener('touchend', (e) => {
     if (!dragging) return;
     dragging = false;
+    document.body.classList.remove('dragging-seek');
     thumb.style.transition = 'left 0.15s linear';
     applyPct(pctFromClientX(e.changedTouches[0].clientX));
+    const sentEls = document.querySelectorAll('.sentence');
+    if (sentEls[state.sentenceIndex]) {
+      sentEls[state.sentenceIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
     if (wasPlaying) {
       setTimeout(() => play(), 80);
     }
@@ -2603,11 +3062,6 @@ $('#programmedLaps').addEventListener('change', () => {
 let keyScrubActive = false;
 
 document.addEventListener('keydown', (e) => {
-  // Same eager resume as the Play button handler — keyboard gestures carry
-  // the same activation token and should restore a suspended context.
-  if (state.audioCtx && state.audioCtx.state !== 'running') {
-    state.audioCtx.resume().catch(() => {});
-  }
   // When input panel is visible, require Shift to avoid interfering with typing.
   // When hidden, no Shift needed — shortcuts work directly.
   if (state.inputVisible) {
@@ -2648,8 +3102,13 @@ document.addEventListener('keydown', (e) => {
     // Cassette rewind — start scrubbing backward
     if (!state.scrubbing) {
       // Jump back one before starting scrub so we hear the prior sentence
-      const idx = Math.max(0, state.sentenceIndex - 1);
-      if (idx !== state.sentenceIndex) state.sentenceIndex = idx;
+      const { idx } = getLiveTransportPosition();
+      const prevIdx = Math.max(0, idx - 1);
+      if (prevIdx !== idx) {
+        const prevBound = getSentenceMsBoundary(prevIdx);
+        state.elapsedMs = prevBound.startMs;
+        state.sentenceIndex = prevIdx;
+      }
       keyScrubActive = true;
       startScrub(-1);
     }
@@ -2665,29 +3124,32 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     if (state.dictMode === 'programmed') return;
     const wasPlaying = state.playing && !state.paused;
-    const bound = getSentenceMsBoundary(state.sentenceIndex);
-    if (state.elapsedMs > bound.startMs + 500) {
+    const { ms, idx, bound } = getLiveTransportPosition();
+    if (ms > bound.startMs + 500) {
       seekToTime(bound.startMs, wasPlaying);
     } else {
-      const idx = Math.max(0, state.sentenceIndex - 1);
-      if (idx !== state.sentenceIndex) {
-        const prevBound = getSentenceMsBoundary(idx);
+      const prevIdx = Math.max(0, idx - 1);
+      if (prevIdx !== idx) {
+        const prevBound = getSentenceMsBoundary(prevIdx);
         seekToTime(prevBound.startMs, wasPlaying);
       }
     }
   } else if (key === 'e') {
     e.preventDefault();
     if (state.dictMode === 'programmed') return;
-    const idx = Math.min(state.sentences.length - 1, state.sentenceIndex + 1);
-    if (idx !== state.sentenceIndex) {
+    const { idx } = getLiveTransportPosition();
+    const nextIdx = Math.min(state.sentences.length - 1, idx + 1);
+    if (nextIdx !== idx) {
       const wasPlaying = state.playing && !state.paused;
-      const bound = getSentenceMsBoundary(idx);
+      const bound = getSentenceMsBoundary(nextIdx);
       seekToTime(bound.startMs, wasPlaying);
     }
   } else if (key === 'w') {
     e.preventDefault();
     if (state.dictMode === 'programmed') return;
     state.repeatMode = !state.repeatMode;
+    if (state.repeatMode) syncRepeatTargetToCurrentPosition();
+    else state.repeatSentenceIndex = null;
     updateABButtons();
     highlightSentence(state.sentenceIndex);
     updateProgress();
@@ -2735,7 +3197,10 @@ function applyFontPrefs(prefs) {
   $$('#fontFamilyOptions button').forEach(b => {
     b.classList.toggle('active', b.dataset.font === prefs.family);
   });
+  refreshTranscriptPlayhead();
 }
+
+window.addEventListener('resize', refreshTranscriptPlayhead);
 
 function changeFontSize(dir) {
   const prefs = loadFontPrefs();
@@ -2786,21 +3251,13 @@ $('#scoreClose').addEventListener('click', () => {
 // Init font prefs
 applyFontPrefs(loadFontPrefs());
 
-// ─── AudioContext visibility recovery ────────────────────────────────────────
-// On macOS, when another app steals the audio session (system sounds, media
-// players, etc.) while this window is in the background, the browser may move
-// the AudioContext into 'interrupted' state.  When the window comes back into
-// view, attempt a silent resume so that a simple Play tap is enough to restart
-// audio — without needing a new browser window.
-//
-// Chrome honours resume() from a visibilitychange handler.
-// Safari may not (gesture policy), but the next Play tap triggers
-// resumeAudioCtx() → recreateAudioContext() which always works.
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden || !state.audioCtx) return;
-  if (state.audioCtx.state === 'running') return;
-  console.log('[AudioCtx] visibilitychange — state:', state.audioCtx.state, '— attempting silent resume');
-  state.audioCtx.resume().catch(() => {});
+// HTMLAudioElement handles interruption recovery automatically through the
+// platform media pipeline — no AudioContext state machine needed.
+// If the page was backgrounded while playing (silence on return), the next
+// Play tap calls _player.play() fresh on the existing element which the OS
+// considers a new gesture-driven activation and restarts the output route.
+['pointerdown', 'touchstart', 'keydown'].forEach(evt => {
+  window.addEventListener(evt, () => unlockPlayerSync(), { capture: true, once: true });
 });
 
 initMaterialPanel();
@@ -2812,8 +3269,7 @@ $('#dictModeSelect').value = state.dictMode;
 $('#programmedLaps').value = state.programmedLaps;
 $('#programmedLaps').style.display = state.dictMode === 'programmed' ? '' : 'none';
 // Initialize bottom panel as hidden
-$('#bottom-panel').classList.add('hidden');
-$('#main-area').style.gridTemplateRows = `1fr ${$('#controls-bar').getBoundingClientRect().height}px 0px`;
+setInputPanelVisible(false, { instant: true });
 // ─── Startup ──────────────────────────────────────────────────────
 // Show the overlay immediately so the user never sees a broken UI.
 // loadExerciseAudio checks IndexedDB cache first — if hit, the overlay
