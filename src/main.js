@@ -1,4 +1,5 @@
 import { createPiperProvider } from 'piper-timing-farm-browser';
+import { CONTENT_CATALOG } from './generated-content.js';
 
 let APP_DEBUG = false;
 try {
@@ -86,65 +87,8 @@ const _swReady = (async () => {
 
 // ─── Content Data ────────────────────────────────────────────────
 
-const EXERCISES = [
-  // Part 1 — Short monologues (picture description style)
-  { exam:"PET", id:"pet-part1-001", part:1, title:"At the train station",
-    text:"The train to London will depart from platform six in approximately ten minutes. Passengers should have their tickets ready for inspection before boarding." },
-  { exam:"PET", id:"pet-part1-002", part:1, title:"At the restaurant",
-    text:"I'd like to book a table for four people at seven o'clock this evening. We'd prefer a table by the window if that's possible." },
-  { exam:"PET", id:"pet-part1-003", part:1, title:"Shopping for clothes",
-    text:"These shoes are a bit too tight around the toes. Do you have them in a larger size? I normally take a size forty-two in this brand." },
-  { exam:"PET", id:"pet-part1-004", part:1, title:"At the doctor's office",
-    text:"I've been feeling quite tired recently and I keep getting headaches in the afternoon. The doctor said I should try to reduce my screen time and get more fresh air." },
-  { exam:"PET", id:"pet-part1-005", part:1, title:"Asking for directions",
-    text:"Excuse me, could you tell me how to get to the museum? I think I've taken a wrong turn somewhere. Go straight ahead until you reach the traffic lights, then turn left at the post office." },
-  { exam:"PET", id:"pet-part1-006", part:1, title:"At the library",
-    text:"I need to return these books but the library closes at five thirty today. You can use the drop box outside the main entrance after hours if you prefer." },
-  { exam:"PET", id:"pet-part1-007", part:1, title:"Making a phone call",
-    text:"Hello, I'm calling about the apartment for rent on Park Road. Is it still available? Yes it is, would you like to arrange a time to come and have a look at it?" },
-
-  // Part 2 — Longer monologue
-  { exam:"PET", id:"pet-part2-001", part:2, title:"A cycling trip across France",
-    text:"Last summer I decided to go on a cycling trip across France with two of my closest friends. We had been planning this adventure for nearly six months and we were all extremely excited when the day finally arrived. We set off early on a Saturday morning and took the ferry from Dover to Calais. The weather was perfect for cycling, not too hot and not too cold. We had planned to cover about sixty kilometres each day, which gave us plenty of time to stop in small villages and enjoy the local food." },
-  { exam:"PET", id:"pet-part2-002", part:2, title:"A visit to the science museum",
-    text:"Last month our school organised a trip to the City Science Museum and it turned out to be one of the best school trips I have ever been on. The museum had recently been renovated and they had added several new interactive exhibitions. My favourite part was the space exploration section where you could experience what it feels like to walk on the moon. They also had a wonderful display about the history of flight, with real aircraft hanging from the ceiling. We spent nearly four hours there and still did not manage to see everything." },
-  { exam:"PET", id:"pet-part2-003", part:2, title:"Learning to cook",
-    text:"When I first moved into my own flat I could barely boil an egg. My mother had always done all the cooking at home and I had never really shown much interest in learning. But after a few weeks of eating nothing but sandwiches and takeaway pizza, I decided something had to change. I started by watching cooking videos online and following simple recipes. The first meal I made was spaghetti bolognese and although it was not perfect, I felt incredibly proud of myself. Now I actually really enjoy cooking and I try to make something new every weekend. My friends say my roast chicken is the best they have ever tasted." },
-  { exam:"PET", id:"pet-part2-004", part:2, title:"My first job interview",
-    text:"I will never forget my first proper job interview. I was eighteen years old and I had just finished my A-levels. The position was for a part-time sales assistant at a large department store in the city centre. I spent the whole week before the interview preparing answers to possible questions and choosing the right clothes to wear. On the day itself I arrived nearly thirty minutes early because I was so worried about being late. The interview only lasted about fifteen minutes but it felt like hours. To my surprise I got the job and I ended up working there for two years while I was at university." },
-  { exam:"PET", id:"pet-part2-005", part:2, title:"A weekend camping trip",
-    text:"A few weeks ago my brother and I decided to go camping in the Lake District for the weekend. We had checked the weather forecast and it said there would be light rain on Saturday morning but it would clear up by the afternoon. Unfortunately the forecast was completely wrong and it poured with rain the entire weekend. Our tent was not completely waterproof so we woke up on Sunday morning in a puddle of water. We ended up packing everything up and driving home early, stopping for a hot meal at a pub on the way back. Despite the terrible weather we still laughed about it and agreed we would try again in the summer." },
-  { exam:"PET", id:"pet-part2-006", part:2, title:"Learning to play the guitar",
-    text:"About six months ago I decided to learn how to play the guitar. My grandfather had given me his old acoustic guitar years ago but it had been sitting in the corner of my bedroom gathering dust ever since. I found a really good teacher online who offers lessons through video calls. At first my fingers were so sore that I could only practise for about ten minutes at a time, but gradually I built up strength and now I can play for an hour without any discomfort. I am not ready to perform in front of an audience yet but I have learned about a dozen songs and I play a little bit every evening to relax." },
-
-  // Part 3 — Gap-fill style (longer monologue)
-  { exam:"PET", id:"pet-part3-001", part:3, title:"Summer music festival announcement",
-    text:"Good evening everyone and welcome to the Summer Sounds Music Festival. I would like to go through a few important announcements before the first performance begins. The main stage will open at six o'clock this evening with a performance by the local youth orchestra. Food and drink stalls are located behind the main stage and will remain open until eleven o'clock at night. Please note that glass bottles are not allowed anywhere on the festival site for safety reasons. If you need any assistance during the event, the information point is next to the main entrance and our volunteers will be happy to help you. Lost property can be collected from the same location. I hope you all have a wonderful evening and enjoy the music." },
-  { exam:"PET", id:"pet-part3-002", part:3, title:"Guide to the city walking tour",
-    text:"Good morning and thank you for joining the City History Walking Tour today. My name is Sarah and I will be your guide for the next two hours. We will start our tour here in the main square which was built in eighteen forty-two. Our first stop will be the old cathedral on Hill Street, which is about a ten-minute walk from here. After visiting the cathedral we will continue to the market district where you will have forty-five minutes of free time to explore and buy some lunch. Please stay with the group at all times and wear the red cap that was given to you at the meeting point so that I can easily spot everyone. The tour will finish back here at the main square at around twelve thirty." },
-  { exam:"PET", id:"pet-part3-003", part:3, title:"Instructions for a new online course",
-    text:"Hello and welcome to your online photography course. Before you begin the first lesson I would like to explain how the course works and what you will need. The course is divided into eight separate units and each unit takes approximately one week to complete. At the end of each unit there is a short quiz to check your understanding. You need to score at least eighty percent to move on to the next unit, but you can retake each quiz up to three times. You will need a camera that allows you to adjust the settings manually, and a notebook for recording your progress. The course materials can be downloaded from the website and you can work through them at your own speed. If you have any questions you can email your tutor at any time." },
-  { exam:"PET", id:"pet-part3-004", part:3, title:"Announcement at a sports centre",
-    text:"Attention all members. This is a message from the management team at Riverside Sports Centre. We have some important updates about our facilities and opening hours. The swimming pool will be closed for maintenance from the fifteenth to the twenty-second of March. During this period the gym will be open for extended hours, from six in the morning until ten at night. We are also pleased to announce that our new climbing wall will open on the first of April. From next month the monthly membership fee will increase by five pounds to thirty-five pounds. However, if you renew your membership before the end of this month you can still pay the old price. For more information please speak to a member of staff at the reception desk." },
-  { exam:"PET", id:"pet-part3-005", part:3, title:"Welcome talk at a language school",
-    text:"Good morning and a very warm welcome to everyone joining us here at the Brighton Language School. My name is Mr. Thompson and I am the head teacher. Your classes will begin tomorrow morning at nine o'clock sharp. Please check the notice board in the main hall to find out which classroom you are in and the name of your teacher. There are fifteen students in each class on average and lessons last for three hours with a twenty-minute break in the middle. Lunch is served in the school canteen between twelve and two o'clock. In the afternoons we organise social activities including sports, city tours and film nights. On Friday evening there will be a welcome party in the student common room and everyone is invited." },
-  { exam:"PET", id:"pet-part3-006", part:3, title:"Radio announcement about road closures",
-    text:"This is a travel update for drivers in the city centre. Due to emergency repair work on a water pipe, Park Avenue will be closed between the hours of eight in the morning and six in the evening for the next three days. Drivers are advised to use Queen Street or Victoria Road as alternative routes. Please be aware that these roads are likely to be busier than usual during the morning and evening rush hours, so you should allow an extra twenty minutes for your journey. Bus services numbers forty-seven and fifty-two will also be affected and will follow a different route during this period. For more information about changes to bus timetables please visit the city transport website or call the helpline." },
-
-  // Part 4 — Dialogue / Interview (longest)
-  { exam:"PET", id:"pet-part4-001", part:4, title:"Interview with a wildlife photographer",
-    text:"Today I'm joined by Mark Davidson, a wildlife photographer who has just returned from six months in the Amazon rainforest. Mark, welcome to the programme. Thank you for having me. It is nice to be back in a comfortable studio after spending so long in the jungle. What was the most challenging part of your trip? Definitely the insects. I had prepared myself for the heat and the humidity, but I was not expecting so many mosquitoes. I must have used about ten bottles of insect repellent. The humidity also made it very difficult to keep my camera equipment dry, which was a constant worry. And what was the most memorable moment? Without a doubt, the moment I spotted a jaguar only about twenty metres away from me. I had been trying to photograph one for weeks. It was early morning and the light was perfect. I managed to take about thirty photographs before it disappeared back into the trees. That sounds absolutely incredible. Will you be going back? I am already planning my next trip for later this year. There is still so much I want to capture." },
-  { exam:"PET", id:"pet-part4-002", part:4, title:"Conversation about a new film",
-    text:"Did you see that new film at the cinema last weekend? The one about the explorer who gets lost in the mountains? Yes I did, actually. I went on Saturday evening with my sister. What did you think of it? I thought it was brilliant. The scenery was absolutely stunning and the acting was really convincing. There was one scene near the end that actually made me cry a little bit. I know exactly which scene you mean. I felt the same way. I was not expecting it to be so emotional. But I have to say I thought the beginning was a bit slow. It took about thirty minutes before anything really interesting happened. That is true, but I think it was necessary to build up the characters. Once the story got going it was really exciting. I would definitely recommend it to anyone who enjoys adventure films. Me too. My sister has already told about five of her friends to go and see it. I might even watch it again when it comes out on streaming." },
-  { exam:"PET", id:"pet-part4-003", part:4, title:"Discussion about a school project",
-    text:"So tell me about your history project. I understand you chose to research life in our town during the Second World War? Yes that is right. My partner James and I spent about three weeks working on it. We interviewed several elderly residents who were children during the war and their stories were absolutely fascinating. That sounds like a really interesting approach. What was the most surprising thing you discovered? We found out that the old factory on Mill Road was used to make parts for aircraft during the war. We had no idea about that before we started our research. One of the people we spoke to actually worked there when she was only sixteen years old. And how did you present your findings? We created a short documentary film using the interviews and old photographs from the local library. We also made a timeline showing the key events that happened in the town between nineteen thirty-nine and nineteen forty-five. Our classmates seemed to really enjoy it. Well done to both of you. That is excellent work." },
-  { exam:"PET", id:"pet-part4-004", part:4, title:"Booking a holiday over the phone",
-    text:"Good afternoon, Sun Travel. How can I help you today? Hello, I am looking to book a week's holiday somewhere warm in July. Can you tell me what is available? Certainly. Do you have a particular destination in mind or a specific budget you would like to stay within? I was thinking about Spain or perhaps Portugal. Somewhere with a nice beach but also some interesting places to visit nearby. My budget is around six hundred pounds per person including flights and accommodation. I have a lovely package to the Algarve in Portugal. It includes return flights from Manchester, seven nights in a four-star hotel with breakfast, and it is only five minutes walk from the beach. That comes to five hundred and seventy-five pounds per person. That sounds perfect actually. Is there an option to add travel insurance as well? Yes, we can add comprehensive travel insurance for an extra twenty-five pounds per person. Would you like me to go ahead and make the booking? Yes please, let's do that." },
-  { exam:"PET", id:"pet-part4-005", part:4, title:"Interview with a young entrepreneur",
-    text:"Welcome back to the show. My next guest is Emma Clarke, a twenty-two-year-old who started her own successful online business while she was still at university. Emma, tell us how it all began. Well, it started almost by accident really. I was studying graphic design and I began making my own greeting cards for friends and family. People kept telling me I should sell them, so I opened a small online shop just to see what would happen. And what happened? I was completely shocked by the response. Within the first month I had received over two hundred orders. I was working on my designs every evening after my lectures and packing orders at the weekend. My flatmates thought I was absolutely crazy. How did you manage to balance your studies with running a business? It was incredibly difficult to be honest. There were times when I thought about giving up because I was getting very little sleep. But my parents were really supportive and my tutors gave me some flexibility with deadlines. In the end I graduated with good marks and the business was doing so well that I decided to focus on it full-time. That is a remarkable story. What advice would you give to other young people who want to start a business? I would say just start small and do not be afraid to make mistakes. You learn so much more from the things that go wrong than from the things that go right." },
-  { exam:"PET", id:"pet-part4-006", part:4, title:"At the dentist's office",
-    text:"Good morning, come in and have a seat. What seems to be the problem? I have been getting a really bad pain in one of my back teeth whenever I eat anything cold or sweet. It started about a week ago and it seems to be getting worse. Let me have a look. Can you open your mouth wide for me please? I am just going to take a quick look around. Is it very serious? I have been quite worried about it actually. I can see a small cavity in your lower right molar. It is not too deep at the moment but it will need a filling. If we leave it any longer the decay could reach the nerve and that would be much more painful and expensive to treat. Can you do the filling today? I am afraid my schedule is completely full today. But I can book you in for Thursday morning at ten thirty if that works for you. The procedure will take about forty-five minutes and you will be able to eat and drink normally a couple of hours afterwards. Thursday morning is fine. Thank you very much. In the meantime try to avoid very cold or sugary foods on that side of your mouth. I will see you on Thursday." },
-];
+// The exercise catalog is generated from /data/pet via
+// webapp/scripts/generate-content-catalog.js.
 
 // ─── Content Metadata ────────────────────────────────────────────
 
@@ -159,6 +103,15 @@ const PART_LABELS = {
   3: 'Part 3 · Announcements',
   4: 'Part 4 · Conversation',
 };
+
+const DEFAULT_EXERCISE_INDEX = Math.max(
+  0,
+  CONTENT_CATALOG.exercises.findIndex((exercise) => exercise.id === CONTENT_CATALOG.defaultExerciseId),
+);
+const DEFAULT_EXERCISE = CONTENT_CATALOG.exercises[DEFAULT_EXERCISE_INDEX] || CONTENT_CATALOG.exercises[0] || null;
+const DEFAULT_EXPANDED_SECTION_KEY = DEFAULT_EXERCISE
+  ? `${DEFAULT_EXERCISE.exam}-${DEFAULT_EXERCISE.sectionKey || `part-${DEFAULT_EXERCISE.part}`}`
+  : null;
 
 // Languages and their level systems shown in the panel
 const LANGUAGE_CONFIG = {
@@ -205,15 +158,15 @@ const mpState = {
   open: false,
   lang: 'en',
   level: 'B1',
-  expandedMaterials: new Set(['PET']),
-  expandedParts: new Set(['PET-1']),
+  expandedMaterials: new Set(DEFAULT_EXERCISE ? [DEFAULT_EXERCISE.exam] : ['PET']),
+  expandedParts: new Set(DEFAULT_EXPANDED_SECTION_KEY ? [DEFAULT_EXPANDED_SECTION_KEY] : ['PET-1']),
 };
 
 // ─── App State ───────────────────────────────────────────────────
 
 const state = {
-  exercises: EXERCISES,
-  currentIndex: 0,
+  exercises: CONTENT_CATALOG.exercises,
+  currentIndex: DEFAULT_EXERCISE_INDEX,
   sentences: [],
   sentenceIndex: 0,
   repeatSentenceIndex: null,
@@ -485,6 +438,39 @@ async function purgeVoiceAssetCache(modelId) {
 
 // ─── Material Panel Rendering ─────────────────────────────────────
 
+function getExerciseSectionKey(exercise) {
+  return exercise.sectionKey || `part-${exercise.part}`;
+}
+
+function getExerciseSectionNodeKey(exercise) {
+  return `${exercise.exam}-${getExerciseSectionKey(exercise)}`;
+}
+
+function getExerciseSectionLabel(exercise) {
+  return exercise.sectionLabel || PART_LABELS[exercise.part] || `Part ${exercise.part}`;
+}
+
+function getExerciseSectionOrder(exercise) {
+  return Number.isFinite(exercise.sectionOrder) ? exercise.sectionOrder : (Number(exercise.part) || 999);
+}
+
+function getExerciseSectionContextLabel(exercise) {
+  if (exercise.sectionContextLabel) return exercise.sectionContextLabel;
+  if (Number.isInteger(exercise.part)) return `P${exercise.part}`;
+  return String(exercise.part || '').trim() || 'Materials';
+}
+
+function getExerciseItemLabel(exercise) {
+  if (exercise.itemLabel) return exercise.itemLabel;
+  const itemNumber = exercise.itemNumber || 1;
+  return `Exercise ${String(itemNumber).padStart(2, '0')}`;
+}
+
+function getExerciseBadgeLabel(exercise) {
+  const sectionLabel = exercise.sectionBadgeLabel || getExerciseSectionLabel(exercise);
+  return `${sectionLabel} · ${getExerciseItemLabel(exercise)}`;
+}
+
 function getLevelsWithContent(lang) {
   const result = new Set();
   state.exercises.forEach(ex => {
@@ -503,7 +489,7 @@ function openMaterialPanel() {
       mpState.lang = meta.language;
       mpState.level = meta.level;
       mpState.expandedMaterials.add(curEx.exam);
-      mpState.expandedParts.add(`${curEx.exam}-${curEx.part}`);
+      mpState.expandedParts.add(getExerciseSectionNodeKey(curEx));
     }
   }
   renderMaterialPanel();
@@ -574,17 +560,29 @@ function renderMaterialTree() {
   for (const [examKey, examMeta] of matchingExams) {
     const expanded = mpState.expandedMaterials.has(examKey);
     const examExercises = state.exercises.filter(e => e.exam === examKey);
-    const parts = [...new Set(examExercises.map(e => e.part))].sort((a, b) => a - b);
+    const sections = [...new Map(
+      examExercises.map((exercise) => [
+        getExerciseSectionKey(exercise),
+        {
+          key: getExerciseSectionKey(exercise),
+          label: getExerciseSectionLabel(exercise),
+          order: getExerciseSectionOrder(exercise),
+        },
+      ]),
+    ).values()].sort((left, right) => {
+      if (left.order !== right.order) return left.order - right.order;
+      return left.label.localeCompare(right.label, 'en');
+    });
 
     html += `<div class="mp-material${expanded ? ' expanded' : ''}" data-exam="${examKey}">`;
     html += `<div class="mp-material-header" role="button" aria-expanded="${expanded}">${chevron}<span class="mp-material-icon">📖</span><span class="mp-material-label">${examMeta.label}</span></div>`;
     html += `<div class="mp-parts">`;
 
-    for (const part of parts) {
-      const partKey = `${examKey}-${part}`;
+    for (const section of sections) {
+      const partKey = `${examKey}-${section.key}`;
       const partExpanded = mpState.expandedParts.has(partKey);
-      const partExercises = examExercises.filter(e => e.part === part);
-      const partLabel = PART_LABELS[part] || `Part ${part}`;
+      const partExercises = examExercises.filter((exercise) => getExerciseSectionKey(exercise) === section.key);
+      const partLabel = section.label;
 
       html += `<div class="mp-part${partExpanded ? ' expanded' : ''}" data-part-key="${partKey}">`;
       html += `<div class="mp-part-header" role="button" aria-expanded="${partExpanded}">${chevronSm}<span class="mp-part-label">${partLabel}</span></div>`;
@@ -593,7 +591,7 @@ function renderMaterialTree() {
       partExercises.forEach((ex, i) => {
         const exIdx = state.exercises.indexOf(ex);
         const isActive = exIdx === state.currentIndex;
-        const num = String(i + 1).padStart(2, '0');
+        const num = String(ex.itemNumber || i + 1).padStart(2, '0');
         html += `<div class="mp-exercise${isActive ? ' active' : ''}" data-idx="${exIdx}" role="treeitem" aria-selected="${isActive}"><span class="mp-exercise-num">${num}</span><span class="mp-exercise-title">${escapeHtml(ex.title)}</span></div>`;
       });
 
@@ -651,7 +649,7 @@ function syncMaterialPanel() {
   const ctxEl = $('#btnMaterialsCtx');
   if (ctxEl) {
     const ex = state.exercises[state.currentIndex];
-    ctxEl.textContent = ex ? `${ex.exam} · P${ex.part}` : 'Materials';
+    ctxEl.textContent = ex ? `${ex.exam} · ${getExerciseSectionContextLabel(ex)}` : 'Materials';
   }
 }
 
@@ -685,7 +683,7 @@ async function loadExercise(index) {
   state.ttsMetaBySpeed = {};
   state._initError = null;
 
-  $('#exerciseBadge').textContent = `Part ${ex.part} · Exercise ${index + 1}`;
+  $('#exerciseBadge').textContent = getExerciseBadgeLabel(ex);
   $('#exerciseTitle').textContent = ex.title;
   $('#transcriptText').innerHTML = state.sentences.map((s, i) => {
     // Tokenize identically to buildWordTimings so word spans and word timings
@@ -697,6 +695,7 @@ async function loadExercise(index) {
   async function jumpToSentenceMs(sentIdx, ms) {
     const repeatWasEnabled = state.repeatMode && state.dictMode !== 'programmed';
     const shouldPlay = (state.playing && !state.paused) || repeatWasEnabled;
+    const targetIsLastSentence = sentIdx === state.sentences.length - 1;
     clearScrubResumeTimer();
     _repeatSeekInFlight = repeatWasEnabled && shouldPlay;
     if (repeatWasEnabled) setRepeatTargetIndex(sentIdx);
@@ -710,11 +709,19 @@ async function loadExercise(index) {
     state.sentenceIndex = sentIdx;
     try {
       if (shouldPlay) {
-        await seekToTime(ms, true, {
-          snapProgress: true,
-          playFromMs: ms,
-          targetSentenceIndex: sentIdx,
-        });
+        if (repeatWasEnabled && targetIsLastSentence) {
+          await seekToTime(ms, false, {
+            snapProgress: true,
+            targetSentenceIndex: sentIdx,
+          });
+          await play();
+        } else {
+          await seekToTime(ms, true, {
+            snapProgress: true,
+            playFromMs: ms,
+            targetSentenceIndex: sentIdx,
+          });
+        }
       } else {
         highlightSentence(sentIdx, { scroll: false });
         updateProgress();
@@ -1154,8 +1161,10 @@ async function switchVoice(voiceType) {
   }
   // Re-synthesize with new voice
   if (state.sentences.length > 0) {
-    await synthesizeAllSpeeds();
-    await saveAudioToCache();
+    state.loadingMessage = `Preparing ${SPEED_PRESETS[state.speedPreset].label.toLowerCase()} audio…`;
+    state.loadingProgress = 0;
+    showLoadingOverlay();
+    await ensureAudioForPresets([state.speedPreset]);
   }
   if (wasPlaying) {
     await seekToTime(0, true);
@@ -1251,6 +1260,7 @@ async function setSpeed(preset) {
   if (!SPEED_PRESETS[preset]) return;
 
   const wasPlaying = state.playing && !state.paused;
+  const previousPreset = state.speedPreset;
 
   // Capture position as sentence-index + fraction BEFORE switching timelines.
   // Raw elapsedMs from one speed cannot be used directly in another speed's
@@ -1262,6 +1272,27 @@ async function setSpeed(preset) {
   if (wasPlaying) stopSrcNode();
 
   state.speedPreset = preset;
+  if (!state.audioURLs[preset] || !state.ttsMetaBySpeed[preset]) {
+    try {
+      state.loadingMessage = `Preparing ${SPEED_PRESETS[preset].label.toLowerCase()} audio…`;
+      state.loadingProgress = 0;
+      showLoadingOverlay();
+      await ensureAudioForPresets([preset]);
+    } catch (err) {
+      console.error('[setSpeed] Failed to prepare audio:', err);
+      state.speedPreset = previousPreset;
+      state.ttsMeta = state.ttsMetaBySpeed[previousPreset] || oldMeta || null;
+      state.totalDurationMs = state.ttsMeta ? state.ttsMeta.durationMs : 0;
+      state.loadingMessage = `Audio preparation failed: ${err.message || 'unknown error'}`;
+      state.loadingProgress = 0;
+      showLoadingOverlay();
+      document.querySelector('.loading-bar-fill')?.classList.remove('indeterminate');
+      updateLoadingOverlay();
+      renderProgressSegments();
+      updateProgress();
+      return;
+    }
+  }
   state.ttsMeta = state.ttsMetaBySpeed[preset] || state.ttsMeta;
   state.totalDurationMs = state.ttsMeta ? state.ttsMeta.durationMs : 0;
 
@@ -1530,12 +1561,14 @@ function unlockPlayerSync() {
 
 // ─── Exercise Loading (Piper WASM synthesis) ────────────────────────
 
-async function synthesizeAllSpeeds() {
-  debugLog('[synthesizeAllSpeeds] Starting synthesis for', state.sentences.length, 'sentences x 3 speeds');
-  const presets = ['slow', 'normal', 'fast'];
-  const totalSteps = presets.length * state.sentences.length;
+async function synthesizeAllSpeeds(presets = [state.speedPreset]) {
+  const synthPresets = [...new Set((presets || []).filter((preset) => SPEED_PRESETS[preset]))];
+  if (synthPresets.length === 0) return;
+
+  debugLog('[synthesizeAllSpeeds] Starting synthesis for', state.sentences.length, 'sentences x', synthPresets.length, 'presets');
+  const totalSteps = Math.max(1, synthPresets.length * Math.max(state.sentences.length, 1));
   let completedSteps = 0;
-  for (const preset of presets) {
+  for (const preset of synthPresets) {
     const spd = SPEED_PRESETS[preset];
     debugLog(`[synthesizeAllSpeeds] === ${preset} (speed=${spd.speed}) ===`);
     state.loadingMessage = 'Preparing audio…';
@@ -1549,11 +1582,47 @@ async function synthesizeAllSpeeds() {
     });
     completedSteps += state.sentences.length;
   }
-  state.ttsMeta = state.ttsMetaBySpeed[state.speedPreset];
+  state.ttsMeta = state.ttsMetaBySpeed[state.speedPreset] || state.ttsMetaBySpeed[synthPresets[0]] || null;
   state.totalDurationMs = state.ttsMeta ? state.ttsMeta.durationMs : 0;
-  state.elapsedMs = 0;
+  state.elapsedMs = Math.max(0, Math.min(state.totalDurationMs || 0, state.elapsedMs));
   renderProgressSegments();
   hideLoadingOverlay();
+}
+
+async function ensureAudioForPresets(presets) {
+  const wantedPresets = [...new Set((presets || []).filter((preset) => SPEED_PRESETS[preset]))];
+  const missingPresets = wantedPresets.filter((preset) => !state.audioURLs[preset] || !state.ttsMetaBySpeed[preset]);
+
+  if (missingPresets.length === 0) {
+    state.ttsMeta = state.ttsMetaBySpeed[state.speedPreset] || state.ttsMeta;
+    state.totalDurationMs = state.ttsMeta ? state.ttsMeta.durationMs : 0;
+    return true;
+  }
+
+  if (!state.provider || !state.providerReady) {
+    if (state.providerReady && !state.provider) {
+      console.warn('[audio] providerReady=true but provider is null — re-initializing');
+      state.providerReady = false;
+    }
+    await initProviderWithCorruptModelRetry();
+  }
+
+  try {
+    await synthesizeAllSpeeds(missingPresets);
+  } catch (err) {
+    if (!isCorruptModelError(err)) throw err;
+    console.warn('[audio] Model parse failed during synthesis — purging and retrying once.');
+    state.provider = null;
+    state.providerReady = false;
+    await purgeVoiceAssetCache(VOICE_MODELS[state.voiceType]);
+    await initProviderWithCorruptModelRetry();
+    await synthesizeAllSpeeds(missingPresets);
+  }
+
+  await saveAudioToCache();
+  state.ttsMeta = state.ttsMetaBySpeed[state.speedPreset] || state.ttsMeta;
+  state.totalDurationMs = state.ttsMeta ? state.ttsMeta.durationMs : 0;
+  return missingPresets.every((preset) => state.audioURLs[preset] && state.ttsMetaBySpeed[preset]);
 }
 
 async function synthesizeAtSpeed(preset, onProgress) {
@@ -1761,7 +1830,7 @@ const CACHE_DB_NAME = 'word-by-word-cache';
 const CACHE_STORE = 'synthesized-audio';
 // Bump when the word-timing/meta format changes so stale entries are discarded.
 const CACHE_META_VERSION = 3;
-const CACHE_MAX_ENTRIES = Math.max(100, EXERCISES.length * Object.keys(VOICE_MODELS).length * 2);
+const CACHE_MAX_ENTRIES = Math.max(100, CONTENT_CATALOG.exercises.length * Object.keys(VOICE_MODELS).length * 2);
 
 function openAudioCache() {
   return new Promise((resolve, reject) => {
@@ -1846,9 +1915,13 @@ async function loadAudioFromCache() {
       console.warn('[cache] Entry found with matching sentences but no audio — ignoring');
       return false;
     }
-    state.ttsMeta = state.ttsMetaBySpeed[state.speedPreset];
+    const currentPresetReady = !!(state.audioURLs[state.speedPreset] && state.ttsMetaBySpeed[state.speedPreset]);
+    state.ttsMeta = state.ttsMetaBySpeed[state.speedPreset] || null;
     state.totalDurationMs = state.ttsMeta ? state.ttsMeta.durationMs : 0;
-    return true;
+    if (!currentPresetReady) {
+      debugLog('[cache] Current preset missing from cached entry — partial cache only');
+    }
+    return currentPresetReady;
   } catch (err) {
     console.warn('[cache] load failed:', err);
     return false;
@@ -1955,42 +2028,17 @@ async function loadExerciseAudio(ex) {
     return;
   }
 
-  // Cache miss — init engine if not already running, then synthesize
+  // Cache miss — synthesize only the active speed preset for this exercise.
   try {
-    if (!state.provider || !state.providerReady) {
-      // Recover from HMR-induced inconsistent state: providerReady=true but provider=null
-      if (state.providerReady && !state.provider) {
-        console.warn(`[loadExerciseAudio #${seq}] providerReady=true but provider is null — re-initializing`);
-        state.providerReady = false;
-      }
-      showLoadingOverlay();
-      await initProviderWithCorruptModelRetry();
-      // Check again — initProvider may have taken long enough for another call to start
-      if (_loadAudioSeq !== seq) {
-        debugLog(`[loadExerciseAudio #${seq}] Aborted after initProvider — superseded by #${_loadAudioSeq}`);
-        return;
-      }
-    }
-
-    debugLog(`[loadExerciseAudio #${seq}] Cache miss — synthesizing`, sentences.length, 'sentences');
-    try {
-      await synthesizeAllSpeeds();
-    } catch (err) {
-      if (!isCorruptModelError(err)) throw err;
-      console.warn(`[loadExerciseAudio #${seq}] Model parse failed during synthesis — purging and retrying once.`);
-      state.provider = null;
-      state.providerReady = false;
-      await purgeVoiceAssetCache(VOICE_MODELS[state.voiceType]);
-      await initProviderWithCorruptModelRetry();
-      await synthesizeAllSpeeds();
-    }
+    debugLog(`[loadExerciseAudio #${seq}] Cache miss — synthesizing`, sentences.length, 'sentences for preset', state.speedPreset);
+    showLoadingOverlay();
+    await ensureAudioForPresets([state.speedPreset]);
     if (_loadAudioSeq !== seq) {
       debugLog(`[loadExerciseAudio #${seq}] Aborted after synthesis — superseded by #${_loadAudioSeq}`);
       return;
     }
     debugLog(`[loadExerciseAudio #${seq}] Synthesis complete`);
     updateProgress();
-    await saveAudioToCache();
   } catch (err) {
     console.error(`[loadExerciseAudio #${seq}] Failed:`, err.message);
     state._initError = err.message || 'unknown error';
@@ -3302,4 +3350,8 @@ setInputPanelVisible(false, { instant: true });
 state.loadingMessage = 'Loading…';
 showLoadingOverlay();
 document.querySelector('.loading-bar-fill')?.classList.add('indeterminate');
-loadExercise(7);
+if (state.exercises.length > 0) {
+  loadExercise(DEFAULT_EXERCISE_INDEX);
+} else {
+  console.error('[content] No exercises available. Run webapp/scripts/generate-content-catalog.js first.');
+}

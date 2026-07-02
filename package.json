@@ -5,6 +5,9 @@
   "description": "Dictation training webapp with Piper TTS via WebAssembly",
   "type": "module",
   "scripts": {
+    "content:generate": "node ./scripts/generate-content-catalog.js",
+    "predev": "npm run content:generate",
+    "prebuild": "npm run content:generate",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview"
